@@ -21,7 +21,9 @@ async function bootstrap() {
   const swaggerConfig = new DocumentBuilder()
     .setTitle('API de Documentação de Colaboradores')
     .setDescription(
-      'API REST para gerenciamento de documentação obrigatória de colaboradores.',
+      'API REST para gerenciamento de documentação obrigatória de colaboradores.\n\n' +
+        '**Erros:** todas as respostas de erro seguem o schema `ErrorResponseDto` ' +
+        '(statusCode, error, message, timestamp, path).',
     )
     .setVersion('1.0')
     .build();

@@ -11,6 +11,7 @@ export const dataSourceOptions: DataSourceOptions = {
   entities: [__dirname + '/../**/*.entity{.ts,.js}'],
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,
+  uuidExtension: 'pgcrypto',
   poolSize: Number(process.env.DB_POOL_SIZE ?? 10),
   connectTimeoutMS: Number(process.env.DB_CONNECTION_TIMEOUT_MS ?? 5000),
   extra: {

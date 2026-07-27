@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { CollaboratorsModule } from './collaborators/collaborators.module';
 import { envValidationSchema } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
@@ -13,6 +14,7 @@ import { HealthModule } from './health/health.module';
     }),
     DatabaseModule,
     HealthModule,
+    CollaboratorsModule,
   ],
 })
 export class AppModule {}
