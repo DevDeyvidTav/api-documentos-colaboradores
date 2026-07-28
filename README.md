@@ -289,7 +289,7 @@ Collaborator 1 ── N DocumentRequirement N ── 1 DocumentType
 **Problema:** Não há banco de teste isolado configurado. Suites e2e compartilham o mesmo Postgres.
 
 **Solução:**
-- `TRUNCATE` de `document_requirement`, `collaborator` e `document_type` antes/depois de cada suite
+- `TRUNCATE` de `document_version`, `document_requirement`, `collaborator` e `document_type` antes/depois de cada suite
 - `maxWorkers: 1` no `jest-e2e.json` (execução serial)
 
 **Motivo:** Workers paralelos no mesmo banco causam deadlock em `TRUNCATE` e contaminação de dados entre suites (409/404 flaky).
