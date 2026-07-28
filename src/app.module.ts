@@ -7,6 +7,7 @@ import { DocumentRequirementsModule } from './document-requirements/document-req
 import { DocumentTypesModule } from './document-types/document-types.module';
 import { DocumentVersionsModule } from './document-versions/document-versions.module';
 import { HealthModule } from './health/health.module';
+import { StatisticsModule } from './statistics/statistics.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { HealthModule } from './health/health.module';
     DocumentTypesModule,
     DocumentRequirementsModule,
     DocumentVersionsModule,
+    StatisticsModule,
   ],
 })
 export class AppModule {}

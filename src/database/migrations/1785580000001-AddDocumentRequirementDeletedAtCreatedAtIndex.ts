@@ -1,6 +1,5 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
-
 export class AddDocumentRequirementDeletedAtCreatedAtIndex1785580000001 implements MigrationInterface {
   name = 'AddDocumentRequirementDeletedAtCreatedAtIndex1785580000001';
 

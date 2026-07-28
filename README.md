@@ -175,11 +175,11 @@ DTO         → Validação de input (class-validator)
 
 **Alternativa descartada:** Cursor-based — mais complexo sem requisito de deep-pagination neste volume.
 
-### 8. Estatísticas derivadas (não implementadas ainda)
+### 8. Estatísticas derivadas (Dashboard)
 
-**Decisão planejada:** Dashboard calculado por queries agregadas, sem tabela/materialized view de snapshot.
+**Decisão:** `GET /statistics` com agregações em tempo de leitura via QueryBuilder — sem tabela/materialized view de snapshot e sem status persistido.
 
-**Motivo:** Poucas tabelas, volume baixo, sempre consistente com soft delete. Evita invalidação de cache.
+**Motivo:** Poucas tabelas, volume adequado ao desafio, sempre consistente com soft delete. Evita invalidação de cache. Detalhes em [Dashboard](#dashboard-estatísticas).
 
 ### 9. Envio lógico de documentos (domínio futuro)
 
@@ -423,6 +423,46 @@ DocumentRequirement
 
 Endpoint: `GET /document-requirements/pending`.
 
+### Dashboard (Estatísticas)
+
+**Por que um único endpoint (`GET /statistics`):** o dashboard é uma **visão consolidada** consumida de uma vez pelo cliente. Fragmentar em vários endpoints aumentaria latência (waterfall), acoplaria o frontend a N contratos e dificultaria consistência temporal entre métricas. Um payload agregado é o padrão para painéis de leitura.
+
+**Como o percentual é calculado:**
+
+```text
+Requirements ativos
+        │
+        ▼
+ Existe versão ativa?
+   ├─ SIM → completed
+   └─ NÃO → pending
+
+completionPercentage = (completed / requirements) * 100  // 2 casas; 0 se requirements = 0
+```
+
+**Pendências no dashboard:** mesma regra derivada da listagem de pendentes (requisito ativo sem versão ativa). Status **não** é persistido.
+
+**Estratégia das agregações (3 queries em paralelo via `Promise.all`):**
+
+1. **Totais** — `COUNT` + `CASE` com `LEFT JOIN` na versão ativa  
+2. **Tipos mais pendentes** — `GROUP BY` tipo ativo, `ORDER BY pendingCount DESC, name ASC`  
+3. **Últimos envios** — projeção de campos (`SELECT` explícito), `ORDER BY submittedAt DESC`, `LIMIT 10`
+
+Cada agregação é distinta; juntá-las em um SQL monólito atrapalharia legibilidade sem ganho claro. Evita-se N+1 e `SELECT *`.
+
+**Soft delete:** requisitos, tipos e colaboradores removidos **não** entram nas métricas operacionais (joins com `deletedAt IS NULL`, alinhado à listagem de pendentes).
+
+**Índices utilizados (já existentes):**
+
+| Índice | Papel |
+|---|---|
+| `uq_document_version_requirement_active` | join/anti-join de versão ativa |
+| `idx_document_version_submitted_at` | ordenação dos últimos envios |
+| `idx_document_requirement_deleted_at_created_at` | filtro de requisitos ativos |
+| FKs / índices por `document_type_id` | agrupamento de pendências por tipo |
+
+**Complexidade:** agregações O(n) no pior caso com seq scan; com índices, próximo de O(n log n) / index scans sobre o conjunto filtrado. Adequado a dezenas de milhares de requisitos no escopo do desafio.
+
 ---
 
 ## Segurança (escopo atual)
@@ -435,12 +475,12 @@ Endpoint: `GET /document-requirements/pending`.
 
 ---
 
-## Próximos módulos (planejados)
+## Escopo implementado (módulos)
 
-1. **Document Types** — catálogo mestre de tipos de documento
-2. **Requirements** — vinculação/desvinculação colaborador ↔ tipo
-3. **Document Versions** — envio lógico, reenvio, histórico, idempotência
-4. **Statistics** — dashboard (% completude, tipos pendentes, últimos envios)
+1. Collaborators · Document Types · Document Requirements · Document Versions
+2. Concorrência · Idempotência · Consulta de pendentes · **Statistics (Dashboard)**
+
+Etapa de finalização (polish / entrega) fica fora deste módulo.
 
 ---
 
