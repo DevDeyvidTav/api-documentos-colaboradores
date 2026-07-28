@@ -16,8 +16,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
         database: configService.getOrThrow<string>('DB_DATABASE'),
         logging: configService.get<boolean>('DB_LOGGING', false),
         autoLoadEntities: true,
-        // PostgreSQL 13+ possui gen_random_uuid() nativamente, dispensando a
-        // extensão uuid-ossp exigida pelo padrão do TypeORM.
         uuidExtension: 'pgcrypto',
         synchronize: false,
         migrationsRun: false,

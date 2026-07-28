@@ -17,7 +17,6 @@ export function isUniqueViolation(error: unknown): boolean {
   return getDriverErrorCode(error) === UNIQUE_VIOLATION_CODE;
 }
 
-/** Deadlock / serialization failure — conflito transacional no PostgreSQL. */
 export function isTransactionConflict(error: unknown): boolean {
   const code = getDriverErrorCode(error);
   return code === DEADLOCK_DETECTED_CODE || code === SERIALIZATION_FAILURE_CODE;
