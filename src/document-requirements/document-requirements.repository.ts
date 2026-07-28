@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, SelectQueryBuilder } from 'typeorm';
+import { DocumentVersion } from '../document-versions/entities/document-version.entity';
 import { DocumentRequirementListStatus } from './dto/document-requirement-list-status.enum';
 import { DocumentRequirement } from './entities/document-requirement.entity';
 
@@ -10,6 +11,17 @@ export interface PaginateDocumentRequirementsOptions {
   status?: DocumentRequirementListStatus;
   collaboratorId?: string;
   documentTypeId?: string;
+}
+
+export interface PaginatePendingDocumentRequirementsOptions {
+  page: number;
+  limit: number;
+  status?: DocumentRequirementListStatus;
+  collaboratorId?: string;
+  documentTypeId?: string;
+  name?: string;
+  createdAfter?: Date;
+  createdBefore?: Date;
 }
 
 @Injectable()
@@ -83,6 +95,59 @@ export class DocumentRequirementsRepository {
     return query.getManyAndCount();
   }
 
+  async paginatePending(
+    options: PaginatePendingDocumentRequirementsOptions,
+  ): Promise<[DocumentRequirement[], number]> {
+    const status = options.status ?? DocumentRequirementListStatus.Active;
+    const query = this.createPendingBaseQuery();
+
+    query.andWhere('activeVersion.id IS NULL');
+
+    if (status === DocumentRequirementListStatus.Active) {
+      query.andWhere('requirement.deletedAt IS NULL');
+    } else if (status === DocumentRequirementListStatus.Deleted) {
+      query.andWhere('requirement.deletedAt IS NOT NULL');
+    }
+
+    if (options.collaboratorId) {
+      query.andWhere('requirement.collaboratorId = :collaboratorId', {
+        collaboratorId: options.collaboratorId,
+      });
+    }
+
+    if (options.documentTypeId) {
+      query.andWhere('requirement.documentTypeId = :documentTypeId', {
+        documentTypeId: options.documentTypeId,
+      });
+    }
+
+    if (options.name) {
+      query.andWhere('collaborator.name ILIKE :name', {
+        name: `%${options.name}%`,
+      });
+    }
+
+    if (options.createdAfter) {
+      query.andWhere('requirement.createdAt >= :createdAfter', {
+        createdAfter: options.createdAfter,
+      });
+    }
+
+    if (options.createdBefore) {
+      query.andWhere('requirement.createdAt <= :createdBefore', {
+        createdBefore: options.createdBefore,
+      });
+    }
+
+    query
+      .orderBy('requirement.createdAt', 'DESC')
+      .addOrderBy('requirement.id', 'DESC')
+      .skip((options.page - 1) * options.limit)
+      .take(options.limit);
+
+    return query.getManyAndCount();
+  }
+
   async softDeleteActive(id: string): Promise<boolean> {
     const result = await this.repository
       .createQueryBuilder()
@@ -94,17 +159,24 @@ export class DocumentRequirementsRepository {
     return (result.affected ?? 0) > 0;
   }
 
-  /**
-   * withDeleted() no QB principal para:
-   * - listar requisitos soft-deleted quando status=deleted|all;
-   * - carregar collaborator/documentType mesmo se soft-deleted (histórico).
-   * O filtro de status do requisito é aplicado explicitamente pelos callers.
-   */
   private createBaseQuery(): SelectQueryBuilder<DocumentRequirement> {
     return this.repository
       .createQueryBuilder('requirement')
       .withDeleted()
       .leftJoinAndSelect('requirement.collaborator', 'collaborator')
       .leftJoinAndSelect('requirement.documentType', 'documentType');
+  }
+
+  private createPendingBaseQuery(): SelectQueryBuilder<DocumentRequirement> {
+    return this.repository
+      .createQueryBuilder('requirement')
+      .withDeleted()
+      .innerJoinAndSelect('requirement.collaborator', 'collaborator')
+      .innerJoinAndSelect('requirement.documentType', 'documentType')
+      .leftJoin(
+        DocumentVersion,
+        'activeVersion',
+        'activeVersion.requirementId = requirement.id AND activeVersion.isActive = true',
+      );
   }
 }

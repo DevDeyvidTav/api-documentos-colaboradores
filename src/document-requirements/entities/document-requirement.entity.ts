@@ -24,6 +24,10 @@ import { DocumentType } from '../../document-types/entities/document-type.entity
 @Index('idx_document_requirement_collaborator_id', ['collaboratorId'])
 @Index('idx_document_requirement_document_type_id', ['documentTypeId'])
 @Index('idx_document_requirement_deleted_at', ['deletedAt'])
+@Index('idx_document_requirement_deleted_at_created_at', [
+  'deletedAt',
+  'createdAt',
+])
 export class DocumentRequirement {
   @PrimaryGeneratedColumn('uuid')
   id: string;

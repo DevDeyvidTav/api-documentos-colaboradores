@@ -82,6 +82,7 @@ describe('DocumentRequirementsService', () => {
             findActiveByCollaboratorAndDocumentType: jest.fn(),
             findActiveById: jest.fn(),
             paginate: jest.fn(),
+            paginatePending: jest.fn(),
             softDeleteActive: jest.fn(),
           },
         },
@@ -282,6 +283,82 @@ describe('DocumentRequirementsService', () => {
       });
       expect(result.page).toBe(1);
       expect(result.limit).toBe(20);
+    });
+  });
+
+  describe('findPending', () => {
+    it('returns an empty page when there are no pending requirements', async () => {
+      repository.paginatePending.mockResolvedValue([[], 0]);
+
+      const result = await service.findPending({ page: 1, limit: 20 });
+
+      expect(result).toEqual({
+        items: [],
+        total: 0,
+        page: 1,
+        limit: 20,
+        totalPages: 0,
+      });
+    });
+
+    it('returns pending requirements with totalPages', async () => {
+      const items = [buildRequirement()];
+      repository.paginatePending.mockResolvedValue([items, 1]);
+
+      const result = await service.findPending({ page: 1, limit: 20 });
+
+      expect(result.items).toEqual(items);
+      expect(result.totalPages).toBe(1);
+    });
+
+    it('forwards collaborator, document type, name and date filters', async () => {
+      repository.paginatePending.mockResolvedValue([[], 0]);
+      const createdAfter = new Date('2026-01-01T00:00:00Z');
+      const createdBefore = new Date('2026-12-31T23:59:59Z');
+
+      await service.findPending({
+        page: 1,
+        limit: 10,
+        collaboratorId: 'a5f2d9d0-1c1a-4b8a-9d3b-000000000001',
+        documentTypeId: 'b5f2d9d0-1c1a-4b8a-9d3b-000000000001',
+        name: 'Deyvid',
+        createdAfter,
+        createdBefore,
+        status: DocumentRequirementListStatus.Active,
+      });
+
+      expect(repository.paginatePending).toHaveBeenCalledWith({
+        page: 1,
+        limit: 10,
+        status: DocumentRequirementListStatus.Active,
+        collaboratorId: 'a5f2d9d0-1c1a-4b8a-9d3b-000000000001',
+        documentTypeId: 'b5f2d9d0-1c1a-4b8a-9d3b-000000000001',
+        name: 'Deyvid',
+        createdAfter,
+        createdBefore,
+      });
+    });
+
+    it('computes totalPages using ceil(total / limit)', async () => {
+      repository.paginatePending.mockResolvedValue([[], 25]);
+
+      const result = await service.findPending({ page: 1, limit: 10 });
+
+      expect(result.totalPages).toBe(3);
+    });
+
+    it('applies default pagination and active status', async () => {
+      repository.paginatePending.mockResolvedValue([[], 0]);
+
+      await service.findPending({} as never);
+
+      expect(repository.paginatePending).toHaveBeenCalledWith(
+        expect.objectContaining({
+          page: 1,
+          limit: 20,
+          status: DocumentRequirementListStatus.Active,
+        }),
+      );
     });
   });
 

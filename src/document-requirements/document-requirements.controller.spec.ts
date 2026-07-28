@@ -54,6 +54,7 @@ describe('DocumentRequirementsController', () => {
           useValue: {
             create: jest.fn(),
             findAll: jest.fn(),
+            findPending: jest.fn(),
             findOne: jest.fn(),
             remove: jest.fn(),
           },
@@ -110,6 +111,43 @@ describe('DocumentRequirementsController', () => {
     expect(result.total).toBe(1);
     expect(result.items[0].collaborator.name).toBe('Deyvid Tavares');
     expect(result.items[0].documentType.name).toBe('CPF');
+  });
+
+  it('findPending() maps pending DTOs with totalPages', async () => {
+    const requirement = buildRequirement();
+    service.findPending.mockResolvedValue({
+      items: [requirement],
+      total: 1,
+      page: 1,
+      limit: 20,
+      totalPages: 1,
+    });
+
+    const result = await controller.findPending({ page: 1, limit: 20 });
+
+    expect(service.findPending).toHaveBeenCalledWith({ page: 1, limit: 20 });
+    expect(result).toEqual({
+      items: [
+        {
+          requirementId: requirement.id,
+          collaborator: {
+            id: requirement.collaborator.id,
+            name: requirement.collaborator.name,
+            email: requirement.collaborator.email,
+          },
+          documentType: {
+            id: requirement.documentType.id,
+            name: requirement.documentType.name,
+          },
+          createdAt: requirement.createdAt,
+          updatedAt: requirement.updatedAt,
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      totalPages: 1,
+    });
   });
 
   it('findOne() delegates to the service and maps the response DTO', async () => {

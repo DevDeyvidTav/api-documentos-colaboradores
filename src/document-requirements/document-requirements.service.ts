@@ -11,11 +11,20 @@ import { DocumentRequirementsRepository } from './document-requirements.reposito
 import { CreateDocumentRequirementDto } from './dto/create-document-requirement.dto';
 import { DocumentRequirementListStatus } from './dto/document-requirement-list-status.enum';
 import { ListDocumentRequirementsQueryDto } from './dto/list-document-requirements-query.dto';
+import { ListPendingDocumentRequirementsQueryDto } from './dto/list-pending-document-requirements-query.dto';
 import { DocumentRequirement } from './entities/document-requirement.entity';
 
 const DUPLICATE_REQUIREMENT_MESSAGE =
   'Já existe um requisito ativo para este colaborador e tipo de documento.';
 const NOT_FOUND_MESSAGE = 'Requisito documental não encontrado.';
+
+export interface PendingDocumentRequirementsPage {
+  items: DocumentRequirement[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
 
 @Injectable()
 export class DocumentRequirementsService {
@@ -78,6 +87,30 @@ export class DocumentRequirementsService {
     });
 
     return { items, total, page, limit };
+  }
+
+  async findPending(
+    query: ListPendingDocumentRequirementsQueryDto,
+  ): Promise<PendingDocumentRequirementsPage> {
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const status = query.status ?? DocumentRequirementListStatus.Active;
+
+    const [items, total] =
+      await this.documentRequirementsRepository.paginatePending({
+        page,
+        limit,
+        status,
+        collaboratorId: query.collaboratorId,
+        documentTypeId: query.documentTypeId,
+        name: query.name,
+        createdAfter: query.createdAfter,
+        createdBefore: query.createdBefore,
+      });
+
+    const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+    return { items, total, page, limit, totalPages };
   }
 
   async findOne(id: string): Promise<DocumentRequirement> {

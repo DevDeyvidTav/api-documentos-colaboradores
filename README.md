@@ -392,6 +392,37 @@ Client
 
 **Importante:** o lock pessimista continua ativo. Idempotência não substitui concorrência — complementa.
 
+### Documentos Pendentes
+
+**Definição (derivada, não persistida):** um documento é **pendente** quando existe um `DocumentRequirement` ativo **e** não existe `DocumentVersion` com `is_active = true` para esse requisito.
+
+```text
+DocumentRequirement
+        │
+        ▼
+ Existe versão ativa?
+   ├─ SIM → não é pendente
+   └─ NÃO → documento pendente
+```
+
+**Por que não persistir `PENDING`:** evita inconsistência com soft delete, reenvios e corridas. A verdade fica nas tabelas de requisito/versão; o status é calculado na leitura.
+
+**Consulta:** `LEFT JOIN document_version` (somente `is_active = true`) + `WHERE activeVersion.id IS NULL`, com joins em colaborador e tipo — **uma query**, sem N+1.
+
+**Benefícios:** sempre consistente com o histórico; sem jobs de invalidação; índice parcial de versão ativa acelera o anti-join.
+
+**Complexidade:** O(log n) com índices adequados sobre filtro + ordenação; custo dominado pelo anti-join em `document_version`.
+
+**Índices utilizados:**
+
+| Índice | Papel |
+|---|---|
+| `uq_document_version_requirement_active` (`WHERE is_active = true`) | localiza/ausência de versão ativa por requisito |
+| `idx_document_requirement_deleted_at_created_at` | filtro operacional + `ORDER BY created_at` |
+| `idx_document_requirement_collaborator_id` / `document_type_id` | filtros por colaborador/tipo |
+
+Endpoint: `GET /document-requirements/pending`.
+
 ---
 
 ## Segurança (escopo atual)

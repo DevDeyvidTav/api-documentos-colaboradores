@@ -26,7 +26,10 @@ import { CreateDocumentRequirementDto } from './dto/create-document-requirement.
 import { DocumentRequirementResponseDto } from './dto/document-requirement-response.dto';
 import { DocumentRequirementsPaginatedResponseDto } from './dto/document-requirements-paginated-response.dto';
 import { ListDocumentRequirementsQueryDto } from './dto/list-document-requirements-query.dto';
+import { ListPendingDocumentRequirementsQueryDto } from './dto/list-pending-document-requirements-query.dto';
+import { PendingDocumentRequirementsPaginatedResponseDto } from './dto/pending-document-requirement-response.dto';
 import { DocumentRequirementMapper } from './mappers/document-requirement.mapper';
+import { PendingDocumentRequirementMapper } from './mappers/pending-document-requirement.mapper';
 
 @ApiTags('document-requirements')
 @Controller('document-requirements')
@@ -91,6 +94,36 @@ export class DocumentRequirementsController {
       total: result.total,
       page: result.page,
       limit: result.limit,
+    };
+  }
+
+  @Get('pending')
+  @ApiOperation({
+    summary: 'Lista documentos pendentes (requisitos sem versão ativa).',
+    description:
+      'Um documento é pendente quando existe um requisito ativo **sem** `DocumentVersion` ativa. ' +
+      'O status PENDING **não** é persistido — é derivado via `LEFT JOIN` na consulta.\n\n' +
+      'Por padrão retorna apenas requisitos ativos. Ordenação: `createdAt DESC`, `id DESC`.',
+  })
+  @ApiOkResponse({
+    type: PendingDocumentRequirementsPaginatedResponseDto,
+    description: 'Listagem paginada de requisitos pendentes.',
+  })
+  @ApiBadRequestResponse({
+    type: ErrorResponseDto,
+    description:
+      'Query params inválidos: `page`/`limit` fora do intervalo, `status` inválido, UUID malformado, datas inválidas ou campos não permitidos.',
+  })
+  async findPending(
+    @Query() query: ListPendingDocumentRequirementsQueryDto,
+  ): Promise<PendingDocumentRequirementsPaginatedResponseDto> {
+    const result = await this.documentRequirementsService.findPending(query);
+    return {
+      items: PendingDocumentRequirementMapper.toResponseList(result.items),
+      total: result.total,
+      page: result.page,
+      limit: result.limit,
+      totalPages: result.totalPages,
     };
   }
 
