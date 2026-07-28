@@ -55,13 +55,13 @@ describe('CollaboratorsController (e2e)', () => {
 
   beforeEach(async () => {
     await dataSource.query(
-      'TRUNCATE TABLE "collaborator" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "document_requirement", "collaborator", "document_type" RESTART IDENTITY CASCADE',
     );
   });
 
   afterAll(async () => {
     await dataSource.query(
-      'TRUNCATE TABLE "collaborator" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "document_requirement", "collaborator", "document_type" RESTART IDENTITY CASCADE',
     );
     await app.close();
   });

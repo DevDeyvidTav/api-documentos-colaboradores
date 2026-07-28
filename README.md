@@ -286,11 +286,15 @@ Collaborator 1 ── N DocumentRequirement N ── 1 DocumentType
 
 ### Testes e2e no mesmo banco de desenvolvimento
 
-**Problema:** Não há banco de teste isolado configurado.
+**Problema:** Não há banco de teste isolado configurado. Suites e2e compartilham o mesmo Postgres.
 
-**Solução:** `TRUNCATE` da tabela `collaborator` antes/depois dos testes e2e.
+**Solução:**
+- `TRUNCATE` de `document_requirement`, `collaborator` e `document_type` antes/depois de cada suite
+- `maxWorkers: 1` no `jest-e2e.json` (execução serial)
 
-**Trade-off:** Simples e funcional para o teste técnico, mas **não seguro para execução paralela** ou CI com múltiplos workers. Evolução futura: `.env.test` + Postgres dedicado ou Testcontainers.
+**Motivo:** Workers paralelos no mesmo banco causam deadlock em `TRUNCATE` e contaminação de dados entre suites (409/404 flaky).
+
+**Trade-off:** Suite e2e mais lenta vs. estabilidade. Evolução futura: `.env.test` + Postgres dedicado ou Testcontainers.
 
 ### TypeScript: entidades e DTOs decorados
 
