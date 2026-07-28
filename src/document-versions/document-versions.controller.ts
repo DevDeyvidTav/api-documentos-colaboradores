@@ -32,7 +32,9 @@ export class DocumentVersionsController {
   @ApiOperation({
     summary: 'Envia um documento (cria nova versão) para um requisito.',
     description:
-      'Cria a versão 1 no primeiro envio. Em reenvios, desativa a versão ativa anterior e cria a próxima em uma única transação.',
+      'Cria a versão 1 no primeiro envio. Em reenvios, desativa a versão ativa anterior e cria a próxima em uma única transação.\n\n' +
+      'Envios concorrentes para o **mesmo** requisito são serializados (lock pessimista no requisito), mantendo a sequência de versões consistente e no máximo uma versão ativa.\n\n' +
+      'Este endpoint ainda **não** possui idempotência: retries da mesma operação podem gerar novas versões.',
   })
   @ApiCreatedResponse({
     type: DocumentVersionResponseDto,
@@ -50,7 +52,8 @@ export class DocumentVersionsController {
   })
   @ApiConflictResponse({
     type: ErrorResponseDto,
-    description: 'Conflito de versão ou violação de unicidade no banco.',
+    description:
+      'Conflito de versão, violação de unicidade ou conflito transacional não recuperável.',
   })
   async submit(
     @Param('requirementId', ParseUUIDPipe) requirementId: string,

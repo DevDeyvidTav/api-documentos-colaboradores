@@ -24,18 +24,6 @@ describe('DocumentVersionsService', () => {
       id: 'r5f2d9d0-1c1a-4b8a-9d3b-000000000001',
       collaboratorId: 'a5f2d9d0-1c1a-4b8a-9d3b-000000000001',
       documentTypeId: 'b5f2d9d0-1c1a-4b8a-9d3b-000000000001',
-      collaborator: {
-        id: 'a5f2d9d0-1c1a-4b8a-9d3b-000000000001',
-        name: 'Deyvid',
-        email: 'deyvid@email.com',
-        deletedAt: null,
-      },
-      documentType: {
-        id: 'b5f2d9d0-1c1a-4b8a-9d3b-000000000001',
-        name: 'CPF',
-        description: null,
-        deletedAt: null,
-      },
       deletedAt: null,
       ...overrides,
     }) as DocumentRequirement;
@@ -54,6 +42,12 @@ describe('DocumentVersionsService', () => {
       ...overrides,
     }) as DocumentVersion;
 
+  const mockSuccessfulTransaction = () => {
+    dataSource.transaction.mockImplementation(
+      async (cb: (manager: unknown) => Promise<DocumentVersion>) => cb({}),
+    );
+  };
+
   beforeEach(async () => {
     const moduleRef = await Test.createTestingModule({
       providers: [
@@ -63,6 +57,9 @@ describe('DocumentVersionsService', () => {
           useValue: {
             findById: jest.fn(),
             findByRequirementIdOrdered: jest.fn(),
+            lockActiveRequirement: jest.fn(),
+            findActiveCollaborator: jest.fn(),
+            findActiveDocumentType: jest.fn(),
             deactivateActiveVersions: jest.fn(),
             getNextVersionNumber: jest.fn(),
             createActiveVersion: jest.fn(),
@@ -90,23 +87,65 @@ describe('DocumentVersionsService', () => {
   });
 
   describe('submit', () => {
-    it('creates version 1 on the first submission', async () => {
+    const prepareHappyPath = (version: DocumentVersion) => {
       const requirement = buildRequirement();
-      const version = buildVersion({ versionNumber: 1 });
-      documentRequirementsService.findOne.mockResolvedValue(requirement);
+      repository.lockActiveRequirement.mockResolvedValue(requirement);
+      repository.findActiveCollaborator.mockResolvedValue({
+        id: requirement.collaboratorId,
+        deletedAt: null,
+      });
+      repository.findActiveDocumentType.mockResolvedValue({
+        id: requirement.documentTypeId,
+        deletedAt: null,
+      });
       repository.deactivateActiveVersions.mockResolvedValue(undefined);
-      repository.getNextVersionNumber.mockResolvedValue(1);
+      repository.getNextVersionNumber.mockResolvedValue(version.versionNumber);
       repository.createActiveVersion.mockResolvedValue(version);
-      dataSource.transaction.mockImplementation(
-        async (cb: (manager: unknown) => Promise<DocumentVersion>) => cb({}),
+      mockSuccessfulTransaction();
+      return requirement;
+    };
+
+    it('runs inside a transaction and locks the requirement with pessimistic write', async () => {
+      const version = buildVersion({ versionNumber: 1 });
+      const requirement = prepareHappyPath(version);
+
+      await service.submit(requirement.id, {
+        documentReference: version.documentReference,
+      });
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(repository.lockActiveRequirement).toHaveBeenCalledWith(
+        expect.anything(),
+        requirement.id,
       );
+    });
+
+    it('validates collaborator and document type inside the transaction', async () => {
+      const version = buildVersion({ versionNumber: 1 });
+      const requirement = prepareHappyPath(version);
+
+      await service.submit(requirement.id, {
+        documentReference: version.documentReference,
+      });
+
+      expect(repository.findActiveCollaborator).toHaveBeenCalledWith(
+        expect.anything(),
+        requirement.collaboratorId,
+      );
+      expect(repository.findActiveDocumentType).toHaveBeenCalledWith(
+        expect.anything(),
+        requirement.documentTypeId,
+      );
+    });
+
+    it('creates version 1 on the first submission', async () => {
+      const version = buildVersion({ versionNumber: 1 });
+      const requirement = prepareHappyPath(version);
 
       const result = await service.submit(requirement.id, {
         documentReference: version.documentReference,
       });
 
-      expect(repository.deactivateActiveVersions).toHaveBeenCalled();
-      expect(repository.getNextVersionNumber).toHaveBeenCalled();
       expect(repository.createActiveVersion).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
@@ -118,20 +157,13 @@ describe('DocumentVersionsService', () => {
       expect(result).toBe(version);
     });
 
-    it('creates version 2, deactivating the previous active version', async () => {
-      const requirement = buildRequirement();
+    it('creates version 2 after deactivating the previous active version', async () => {
       const version = buildVersion({
         id: 'v5f2d9d0-1c1a-4b8a-9d3b-000000000002',
         versionNumber: 2,
         documentReference: 'documents/collaborator-123/cpf-v2.pdf',
       });
-      documentRequirementsService.findOne.mockResolvedValue(requirement);
-      repository.deactivateActiveVersions.mockResolvedValue(undefined);
-      repository.getNextVersionNumber.mockResolvedValue(2);
-      repository.createActiveVersion.mockResolvedValue(version);
-      dataSource.transaction.mockImplementation(
-        async (cb: (manager: unknown) => Promise<DocumentVersion>) => cb({}),
-      );
+      const requirement = prepareHappyPath(version);
 
       const result = await service.submit(requirement.id, {
         documentReference: version.documentReference,
@@ -141,76 +173,55 @@ describe('DocumentVersionsService', () => {
         expect.anything(),
         requirement.id,
       );
+      expect(repository.getNextVersionNumber).toHaveBeenCalledWith(
+        expect.anything(),
+        requirement.id,
+      );
       expect(result.versionNumber).toBe(2);
       expect(result.isActive).toBe(true);
     });
 
-    it('throws NotFoundException when the requirement does not exist', async () => {
-      documentRequirementsService.findOne.mockRejectedValue(
-        new NotFoundException('Requisito documental não encontrado.'),
-      );
+    it('throws NotFoundException when the locked requirement is missing or inactive', async () => {
+      repository.lockActiveRequirement.mockResolvedValue(null);
+      mockSuccessfulTransaction();
 
       await expect(
-        service.submit('missing', {
-          documentReference: 'documents/x.pdf',
-        }),
+        service.submit('missing', { documentReference: 'documents/x.pdf' }),
       ).rejects.toBeInstanceOf(NotFoundException);
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(repository.createActiveVersion).not.toHaveBeenCalled();
     });
 
-    it('throws NotFoundException when the requirement is soft-deleted', async () => {
-      documentRequirementsService.findOne.mockRejectedValue(
-        new NotFoundException('Requisito documental não encontrado.'),
-      );
-
-      await expect(
-        service.submit('deleted-requirement', {
-          documentReference: 'documents/x.pdf',
-        }),
-      ).rejects.toBeInstanceOf(NotFoundException);
-    });
-
-    it('throws NotFoundException when the related collaborator is soft-deleted', async () => {
-      documentRequirementsService.findOne.mockResolvedValue(
-        buildRequirement({
-          collaborator: {
-            id: 'a5f2d9d0-1c1a-4b8a-9d3b-000000000001',
-            name: 'Deyvid',
-            email: 'deyvid@email.com',
-            deletedAt: new Date(),
-          } as DocumentRequirement['collaborator'],
-        }),
-      );
+    it('throws NotFoundException when the collaborator is inactive', async () => {
+      repository.lockActiveRequirement.mockResolvedValue(buildRequirement());
+      repository.findActiveCollaborator.mockResolvedValue(null);
+      mockSuccessfulTransaction();
 
       await expect(
         service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
           documentReference: 'documents/x.pdf',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
-      expect(dataSource.transaction).not.toHaveBeenCalled();
+      expect(repository.createActiveVersion).not.toHaveBeenCalled();
     });
 
-    it('throws NotFoundException when the related document type is soft-deleted', async () => {
-      documentRequirementsService.findOne.mockResolvedValue(
-        buildRequirement({
-          documentType: {
-            id: 'b5f2d9d0-1c1a-4b8a-9d3b-000000000001',
-            name: 'CPF',
-            description: null,
-            deletedAt: new Date(),
-          } as DocumentRequirement['documentType'],
-        }),
-      );
+    it('throws NotFoundException when the document type is inactive', async () => {
+      const requirement = buildRequirement();
+      repository.lockActiveRequirement.mockResolvedValue(requirement);
+      repository.findActiveCollaborator.mockResolvedValue({
+        id: requirement.collaboratorId,
+      });
+      repository.findActiveDocumentType.mockResolvedValue(null);
+      mockSuccessfulTransaction();
 
       await expect(
-        service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
+        service.submit(requirement.id, {
           documentReference: 'documents/x.pdf',
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
+      expect(repository.createActiveVersion).not.toHaveBeenCalled();
     });
 
     it('maps unique-violation into ConflictException', async () => {
-      documentRequirementsService.findOne.mockResolvedValue(buildRequirement());
       const uniqueViolationError: QueryFailedError = Object.assign(
         Object.create(QueryFailedError.prototype) as QueryFailedError,
         { driverError: { code: '23505' } },
@@ -224,15 +235,25 @@ describe('DocumentVersionsService', () => {
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
+    it('maps deadlock into ConflictException', async () => {
+      const deadlockError: QueryFailedError = Object.assign(
+        Object.create(QueryFailedError.prototype) as QueryFailedError,
+        { driverError: { code: '40P01' } },
+      );
+      dataSource.transaction.mockRejectedValue(deadlockError);
+
+      await expect(
+        service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
+          documentReference: 'documents/x.pdf',
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
     it('propagates persistence errors so the transaction rolls back', async () => {
-      documentRequirementsService.findOne.mockResolvedValue(buildRequirement());
-      repository.deactivateActiveVersions.mockResolvedValue(undefined);
-      repository.getNextVersionNumber.mockResolvedValue(2);
+      const version = buildVersion({ versionNumber: 2 });
+      prepareHappyPath(version);
       const persistenceError = new Error('insert failed');
       repository.createActiveVersion.mockRejectedValue(persistenceError);
-      dataSource.transaction.mockImplementation(
-        async (cb: (manager: unknown) => Promise<DocumentVersion>) => cb({}),
-      );
 
       await expect(
         service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
@@ -241,6 +262,45 @@ describe('DocumentVersionsService', () => {
       ).rejects.toBe(persistenceError);
       expect(repository.deactivateActiveVersions).toHaveBeenCalled();
       expect(repository.createActiveVersion).toHaveBeenCalled();
+    });
+
+    it('uses the transactional manager for every write/read in submit', async () => {
+      const version = buildVersion({ versionNumber: 1 });
+      const requirement = prepareHappyPath(version);
+      const transactionalManager = { marker: 'tx-manager' };
+      dataSource.transaction.mockImplementation(
+        async (cb: (manager: unknown) => Promise<DocumentVersion>) =>
+          cb(transactionalManager),
+      );
+
+      await service.submit(requirement.id, {
+        documentReference: version.documentReference,
+      });
+
+      expect(repository.lockActiveRequirement).toHaveBeenCalledWith(
+        transactionalManager,
+        requirement.id,
+      );
+      expect(repository.findActiveCollaborator).toHaveBeenCalledWith(
+        transactionalManager,
+        requirement.collaboratorId,
+      );
+      expect(repository.findActiveDocumentType).toHaveBeenCalledWith(
+        transactionalManager,
+        requirement.documentTypeId,
+      );
+      expect(repository.deactivateActiveVersions).toHaveBeenCalledWith(
+        transactionalManager,
+        requirement.id,
+      );
+      expect(repository.getNextVersionNumber).toHaveBeenCalledWith(
+        transactionalManager,
+        requirement.id,
+      );
+      expect(repository.createActiveVersion).toHaveBeenCalledWith(
+        transactionalManager,
+        expect.any(Object),
+      );
     });
   });
 

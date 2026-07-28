@@ -320,6 +320,39 @@ Collaborator 1 ── N DocumentRequirement N ── 1 DocumentType
 
 **Trade-off:** Duas camadas de proteção vs. simplicidade de uma única fonte de verdade. Escolhemos defesa em profundidade.
 
+### Concorrência no envio de Document Versions
+
+**Problema (race condition):** Uma transação simples (desativar + inserir) **não serializa** leituras concorrentes do mesmo requisito. Duas requisições podem ler o mesmo `MAX(version_number)`, calcular o mesmo próximo número e tentar criar duas versões `4` — ou deixar mais de uma `is_active = true` por um instante até a constraint falhar.
+
+**Solução:** Lock pessimista no **agregado** `DocumentRequirement` (`SELECT ... FOR UPDATE` via TypeORM `pessimistic_write`), **dentro** da mesma transação que:
+
+1. valida requisito / colaborador / tipo ativos;
+2. desativa a versão ativa;
+3. calcula o próximo `versionNumber`;
+4. cria a nova versão ativa.
+
+Assim, envios do **mesmo** requisito enfileiram; requisitos **diferentes** continuam em paralelo (sem lock global, sem mutex em memória, sem Redis/fila).
+
+**Por que no requisito (e não na versão):** o requisito é a unidade de consistência da sequência. Travar só a versão ativa falharia no primeiro envio (ainda não existe versão) e não cobriria bem o cálculo do próximo número.
+
+**Por que as constraints continuam necessárias:**
+
+| Constraint | Proteção |
+|---|---|
+| `UNIQUE (requirement_id, version_number)` | impede duplicidade de número mesmo sob bug/race residual |
+| `UNIQUE (requirement_id) WHERE is_active = true` | garante no máximo uma versão ativa |
+
+São a **última camada**; o lock é a camada de ordenação/prevenção.
+
+**Múltiplas instâncias da API:** o lock é no PostgreSQL (linha), então funciona entre pods/processos. Mutex em memória só protegeria uma instância.
+
+**Soft delete concorrente com envio:** o `FOR UPDATE` na linha do requisito serializa com o soft delete (que atualiza `deleted_at`). O resultado pode ser envio concluído antes da remoção **ou** 404 por requisito inativo — nunca duas ativas, nunca número duplicado, nunca versão “órfã ativa” criada **depois** do soft delete na mesma linha bloqueada.
+
+**Concorrência ≠ idempotência:**
+
+- **Concorrência (esta etapa):** operações **distintas** simultâneas geram versões **distintas** e ordenadas (4, 5, 6).
+- **Idempotência (etapa futura):** retries da **mesma** operação não devem criar versões extras.
+
 ---
 
 ## Segurança (escopo atual)

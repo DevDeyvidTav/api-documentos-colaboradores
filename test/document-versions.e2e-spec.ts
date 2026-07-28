@@ -204,37 +204,6 @@ describe('DocumentVersionsController (e2e)', () => {
         })
         .expect(400);
     });
-
-    it('rolls back when creating the new version fails after deactivation', async () => {
-      const { requirementId } = await seedRequirement();
-      await submitVersion(
-        requirementId,
-        'documents/collaborator-123/cpf-v1.pdf',
-      ).expect(201);
-
-      const versionsRepository = moduleRef.get(DocumentVersionsRepository);
-      const spy = jest
-        .spyOn(versionsRepository, 'createActiveVersion')
-        .mockRejectedValueOnce(new Error('forced persistence failure'));
-
-      await submitVersion(
-        requirementId,
-        'documents/collaborator-123/cpf-v2.pdf',
-      ).expect(500);
-
-      spy.mockRestore();
-
-      const history = await request(server())
-        .get(`/document-requirements/${requirementId}/versions`)
-        .expect(200);
-      const versions = history.body as DocumentVersionApiResponse[];
-
-      expect(versions).toHaveLength(1);
-      expect(versions[0]).toMatchObject({
-        versionNumber: 1,
-        isActive: true,
-      });
-    });
   });
 
   describe('GET /document-requirements/:requirementId/versions', () => {
@@ -295,6 +264,218 @@ describe('DocumentVersionsController (e2e)', () => {
 
     it('returns 400 for a malformed id', async () => {
       await request(server()).get('/document-versions/not-a-uuid').expect(400);
+    });
+  });
+
+  describe('concurrency', () => {
+    it('serializes two simultaneous resubmits into versions 2 and 3', async () => {
+      const { requirementId } = await seedRequirement();
+      await submitVersion(requirementId, 'documents/v1.pdf').expect(201);
+
+      const [first, second] = await Promise.all([
+        submitVersion(requirementId, 'documents/concurrent-a.pdf'),
+        submitVersion(requirementId, 'documents/concurrent-b.pdf'),
+      ]);
+
+      expect([first.status, second.status].sort((a, b) => a - b)).toEqual([
+        201, 201,
+      ]);
+
+      const versionNumbers = [
+        (first.body as DocumentVersionApiResponse).versionNumber,
+        (second.body as DocumentVersionApiResponse).versionNumber,
+      ].sort((a, b) => a - b);
+      expect(versionNumbers).toEqual([2, 3]);
+
+      const history = await request(server())
+        .get(`/document-requirements/${requirementId}/versions`)
+        .expect(200);
+      const versions = history.body as DocumentVersionApiResponse[];
+
+      expect(versions).toHaveLength(3);
+      expect(
+        versions.map((v) => v.versionNumber).sort((a, b) => a - b),
+      ).toEqual([1, 2, 3]);
+      expect(versions.filter((v) => v.isActive)).toHaveLength(1);
+      expect(versions.find((v) => v.versionNumber === 3)?.isActive).toBe(true);
+      expect(versions.find((v) => v.versionNumber === 1)?.isActive).toBe(false);
+    });
+
+    it('serializes three simultaneous resubmits into versions 2, 3 and 4', async () => {
+      const { requirementId } = await seedRequirement();
+      await submitVersion(requirementId, 'documents/v1.pdf').expect(201);
+
+      const responses = await Promise.all([
+        submitVersion(requirementId, 'documents/c1.pdf'),
+        submitVersion(requirementId, 'documents/c2.pdf'),
+        submitVersion(requirementId, 'documents/c3.pdf'),
+      ]);
+
+      expect(responses.every((response) => response.status === 201)).toBe(true);
+
+      const numbers = responses
+        .map(
+          (response) =>
+            (response.body as DocumentVersionApiResponse).versionNumber,
+        )
+        .sort((a, b) => a - b);
+      expect(numbers).toEqual([2, 3, 4]);
+
+      const history = await request(server())
+        .get(`/document-requirements/${requirementId}/versions`)
+        .expect(200);
+      const versions = history.body as DocumentVersionApiResponse[];
+
+      expect(versions).toHaveLength(4);
+      expect(new Set(versions.map((v) => v.versionNumber)).size).toBe(4);
+      expect(versions.filter((v) => v.isActive)).toHaveLength(1);
+      expect(versions.find((v) => v.versionNumber === 4)?.isActive).toBe(true);
+    });
+
+    it('allows simultaneous submits on different requirements without cross-blocking failures', async () => {
+      const first = await seedRequirement();
+      const secondCollaborator = await request(server())
+        .post('/collaborators')
+        .send({ name: 'Ana Silva', email: 'ana@email.com' })
+        .expect(201);
+      const secondType = await request(server())
+        .post('/document-types')
+        .send({ name: 'RG' })
+        .expect(201);
+      const secondRequirement = await request(server())
+        .post('/document-requirements')
+        .send({
+          collaboratorId: (secondCollaborator.body as CollaboratorApiResponse)
+            .id,
+          documentTypeId: (secondType.body as DocumentTypeApiResponse).id,
+        })
+        .expect(201);
+      const secondRequirementId = (
+        secondRequirement.body as DocumentRequirementApiResponse
+      ).id;
+
+      await Promise.all([
+        submitVersion(first.requirementId, 'documents/first-v1.pdf').expect(
+          201,
+        ),
+        submitVersion(secondRequirementId, 'documents/second-v1.pdf').expect(
+          201,
+        ),
+      ]);
+
+      const [firstResubmit, secondResubmit] = await Promise.all([
+        submitVersion(first.requirementId, 'documents/first-v2.pdf'),
+        submitVersion(secondRequirementId, 'documents/second-v2.pdf'),
+      ]);
+
+      expect(firstResubmit.status).toBe(201);
+      expect(secondResubmit.status).toBe(201);
+      expect(
+        (firstResubmit.body as DocumentVersionApiResponse).versionNumber,
+      ).toBe(2);
+      expect(
+        (secondResubmit.body as DocumentVersionApiResponse).versionNumber,
+      ).toBe(2);
+
+      const firstHistory = await request(server())
+        .get(`/document-requirements/${first.requirementId}/versions`)
+        .expect(200);
+      const secondHistory = await request(server())
+        .get(`/document-requirements/${secondRequirementId}/versions`)
+        .expect(200);
+
+      expect(
+        (firstHistory.body as DocumentVersionApiResponse[]).filter(
+          (v) => v.isActive,
+        ),
+      ).toHaveLength(1);
+      expect(
+        (secondHistory.body as DocumentVersionApiResponse[]).filter(
+          (v) => v.isActive,
+        ),
+      ).toHaveLength(1);
+    });
+
+    it('rolls back when creating the new version fails after deactivation', async () => {
+      const { requirementId } = await seedRequirement();
+      await submitVersion(
+        requirementId,
+        'documents/collaborator-123/cpf-v1.pdf',
+      ).expect(201);
+
+      const versionsRepository = moduleRef.get(DocumentVersionsRepository);
+      const spy = jest
+        .spyOn(versionsRepository, 'createActiveVersion')
+        .mockRejectedValueOnce(new Error('forced persistence failure'));
+
+      await submitVersion(
+        requirementId,
+        'documents/collaborator-123/cpf-v2.pdf',
+      ).expect(500);
+
+      spy.mockRestore();
+
+      const history = await request(server())
+        .get(`/document-requirements/${requirementId}/versions`)
+        .expect(200);
+      const versions = history.body as DocumentVersionApiResponse[];
+
+      expect(versions).toHaveLength(1);
+      expect(versions[0]).toMatchObject({
+        versionNumber: 1,
+        isActive: true,
+      });
+    });
+
+    it('handles concurrent submit and soft-delete without partial or double-active state', async () => {
+      const { requirementId } = await seedRequirement();
+      await submitVersion(requirementId, 'documents/v1.pdf').expect(201);
+
+      const [submitResult, deleteResult] = await Promise.all([
+        submitVersion(requirementId, 'documents/v2-race.pdf'),
+        request(server()).delete(`/document-requirements/${requirementId}`),
+      ]);
+
+      expect([201, 404]).toContain(submitResult.status);
+      expect([204, 404]).toContain(deleteResult.status);
+
+      const activeCountRaw: unknown = await dataSource.query(
+        `SELECT COUNT(*)::int AS count
+         FROM document_version
+         WHERE requirement_id = $1 AND is_active = true`,
+        [requirementId],
+      );
+      const activeCount = activeCountRaw as Array<{ count: number }>;
+      expect(Number(activeCount[0].count)).toBeLessThanOrEqual(1);
+
+      const orphanRaw: unknown = await dataSource.query(
+        `SELECT COUNT(*)::int AS count
+         FROM document_version v
+         INNER JOIN document_requirement r ON r.id = v.requirement_id
+         WHERE v.requirement_id = $1
+           AND v.is_active = true
+           AND r.deleted_at IS NOT NULL
+           AND v.created_at > r.deleted_at`,
+        [requirementId],
+      );
+      const orphanActiveOnDeletedRequirement = orphanRaw as Array<{
+        count: number;
+      }>;
+      expect(Number(orphanActiveOnDeletedRequirement[0].count)).toBe(0);
+
+      const duplicateRaw: unknown = await dataSource.query(
+        `SELECT version_number, COUNT(*)::int AS count
+         FROM document_version
+         WHERE requirement_id = $1
+         GROUP BY version_number
+         HAVING COUNT(*) > 1`,
+        [requirementId],
+      );
+      const duplicateNumbers = duplicateRaw as Array<{
+        version_number: number;
+        count: number;
+      }>;
+      expect(duplicateNumbers).toHaveLength(0);
     });
   });
 });

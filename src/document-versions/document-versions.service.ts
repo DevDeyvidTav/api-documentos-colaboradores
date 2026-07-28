@@ -4,7 +4,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DataSource } from 'typeorm';
-import { isUniqueViolation } from '../common/database/database-errors.util';
+import {
+  isTransactionConflict,
+  isUniqueViolation,
+} from '../common/database/database-errors.util';
 import { DocumentRequirementsService } from '../document-requirements/document-requirements.service';
 import { DocumentVersionsRepository } from './document-versions.repository';
 import { CreateDocumentVersionDto } from './dto/create-document-version.dto';
@@ -13,6 +16,7 @@ import { DocumentVersion } from './entities/document-version.entity';
 const VERSION_CONFLICT_MESSAGE =
   'Não foi possível registrar o envio devido a um conflito de versão.';
 const VERSION_NOT_FOUND_MESSAGE = 'Versão de documento não encontrada.';
+const REQUIREMENT_NOT_FOUND_MESSAGE = 'Requisito documental não encontrado.';
 const COLLABORATOR_INACTIVE_MESSAGE = 'Colaborador não encontrado.';
 const DOCUMENT_TYPE_INACTIVE_MESSAGE = 'Tipo de documento não encontrado.';
 
@@ -28,18 +32,35 @@ export class DocumentVersionsService {
     requirementId: string,
     dto: CreateDocumentVersionDto,
   ): Promise<DocumentVersion> {
-    const requirement =
-      await this.documentRequirementsService.findOne(requirementId);
-
-    if (requirement.collaborator.deletedAt != null) {
-      throw new NotFoundException(COLLABORATOR_INACTIVE_MESSAGE);
-    }
-    if (requirement.documentType.deletedAt != null) {
-      throw new NotFoundException(DOCUMENT_TYPE_INACTIVE_MESSAGE);
-    }
-
     try {
       return await this.dataSource.transaction(async (manager) => {
+        const requirement =
+          await this.documentVersionsRepository.lockActiveRequirement(
+            manager,
+            requirementId,
+          );
+        if (!requirement) {
+          throw new NotFoundException(REQUIREMENT_NOT_FOUND_MESSAGE);
+        }
+
+        const collaborator =
+          await this.documentVersionsRepository.findActiveCollaborator(
+            manager,
+            requirement.collaboratorId,
+          );
+        if (!collaborator) {
+          throw new NotFoundException(COLLABORATOR_INACTIVE_MESSAGE);
+        }
+
+        const documentType =
+          await this.documentVersionsRepository.findActiveDocumentType(
+            manager,
+            requirement.documentTypeId,
+          );
+        if (!documentType) {
+          throw new NotFoundException(DOCUMENT_TYPE_INACTIVE_MESSAGE);
+        }
+
         await this.documentVersionsRepository.deactivateActiveVersions(
           manager,
           requirementId,
@@ -59,7 +80,10 @@ export class DocumentVersionsService {
         });
       });
     } catch (error) {
-      if (isUniqueViolation(error)) {
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      if (isUniqueViolation(error) || isTransactionConflict(error)) {
         throw new ConflictException(VERSION_CONFLICT_MESSAGE);
       }
       throw error;

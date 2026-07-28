@@ -1,6 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, Repository } from 'typeorm';
+import { Collaborator } from '../collaborators/entities/collaborator.entity';
+import { DocumentRequirement } from '../document-requirements/entities/document-requirement.entity';
+import { DocumentType } from '../document-types/entities/document-type.entity';
 import { DocumentVersion } from './entities/document-version.entity';
 
 @Injectable()
@@ -21,6 +24,40 @@ export class DocumentVersionsRepository {
       where: { requirementId },
       order: { versionNumber: 'DESC' },
     });
+  }
+
+  lockActiveRequirement(
+    manager: EntityManager,
+    requirementId: string,
+  ): Promise<DocumentRequirement | null> {
+    return manager
+      .createQueryBuilder(DocumentRequirement, 'requirement')
+      .setLock('pessimistic_write')
+      .where('requirement.id = :requirementId', { requirementId })
+      .andWhere('requirement.deletedAt IS NULL')
+      .getOne();
+  }
+
+  findActiveCollaborator(
+    manager: EntityManager,
+    collaboratorId: string,
+  ): Promise<Collaborator | null> {
+    return manager
+      .createQueryBuilder(Collaborator, 'collaborator')
+      .where('collaborator.id = :collaboratorId', { collaboratorId })
+      .andWhere('collaborator.deletedAt IS NULL')
+      .getOne();
+  }
+
+  findActiveDocumentType(
+    manager: EntityManager,
+    documentTypeId: string,
+  ): Promise<DocumentType | null> {
+    return manager
+      .createQueryBuilder(DocumentType, 'documentType')
+      .where('documentType.id = :documentTypeId', { documentTypeId })
+      .andWhere('documentType.deletedAt IS NULL')
+      .getOne();
   }
 
   async deactivateActiveVersions(
