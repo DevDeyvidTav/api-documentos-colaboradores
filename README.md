@@ -1,486 +1,377 @@
 # API de Documentação de Colaboradores
 
-API REST para gerenciamento de documentação obrigatória de colaboradores — teste técnico Inmeta.
+API REST para gerenciamento da documentação obrigatória de colaboradores — teste técnico Inmeta.
 
-O sistema controla cadastro de colaboradores, tipos de documentos, vínculos obrigatórios, envio lógico com histórico de versões, pendências, estatísticas e soft delete. **Autenticação está fora do escopo.**
+O sistema controla o cadastro de colaboradores, o catálogo de tipos de documento, os vínculos obrigatórios (requirements), o envio lógico com histórico de versões, a consulta de pendências, o dashboard de estatísticas e soft delete. Upload físico de arquivos (S3/storage) e **autenticação/autorização estão fora do escopo**.
+
+## Objetivos arquiteturais
+
+Durante o desenvolvimento foram priorizados:
+
+- consistência transacional;
+- modelagem relacional;
+- separação de responsabilidades;
+- histórico de versões;
+- tratamento de concorrência;
+- idempotência;
+- testes automatizados;
+- evolução do schema por migrations;
+- documentação das decisões e trade-offs.
 
 ## Stack
 
 | Camada | Tecnologia |
 |---|---|
-| Runtime | Node.js + NestJS 11 |
+| Runtime | Node.js 22+ · NestJS 11 |
 | Banco | PostgreSQL 16 (Docker Compose) |
-| ORM | TypeORM 0.3.31 |
+| ORM | TypeORM 0.3.31 (`synchronize: false`) |
 | Validação | class-validator + Joi (env) |
 | Docs | Swagger (`/docs`) |
 | Health | @nestjs/terminus (`/health`) |
-| Testes | Jest (unitário + integração/e2e) |
+| Testes | Jest (unitário + E2E com Postgres real) |
+| CI | GitHub Actions |
 
-## Pré-requisitos
-
-- Node.js **≥ 22.13** recomendado (22.0 funciona, mas gera warnings `EBADENGINE`)
-- Docker Desktop em execução
-- npm
-
-## Configuração rápida
+## Como executar
 
 ```bash
-# 1. Instalar dependências
-npm install
-
-# 2. Copiar variáveis de ambiente
+npm ci
 cp .env.example .env
-
-# 3. Subir PostgreSQL
 docker compose up -d
-
-# 4. Aplicar migrations
 npm run migration:run
-
-# 5. Iniciar em modo desenvolvimento
 npm run start:dev
 ```
 
-A API sobe em `http://localhost:3000`. Swagger em `http://localhost:3000/docs` — inclui schema de sucesso e **respostas de erro por endpoint** (`ErrorResponseDto`: `statusCode`, `error`, `message`, `timestamp`, `path`).
+A API sobe em `http://localhost:3000`. Contratos detalhados, schemas e respostas de erro estão em `http://localhost:3000/docs`.
 
 ### Porta do PostgreSQL
 
-O `.env.example` usa `DB_PORT=5434` porque em ambientes com PostgreSQL local ou outros containers (5432/5433 ocupados), o mapeamento padrão conflita. Ajuste conforme sua máquina.
+O `.env.example` usa `DB_PORT=5434` para evitar conflito com outras instâncias locais (5432/5433). Ajuste conforme sua máquina. O container escuta `5432` internamente; o host mapeia `${DB_PORT}`.
 
-## Scripts úteis
+### Qualidade local
 
-| Script | Descrição |
-|---|---|
-| `npm run start:dev` | Desenvolvimento com hot-reload |
-| `npm run build` | Compila TypeScript |
-| `npm run lint` | ESLint + Prettier |
-| `npm test` | Testes unitários |
-| `npm run test:e2e` | Testes de integração (Postgres real) |
-| `npm run migration:generate -- src/database/migrations/NomeDaMigration` | Gera migration a partir das entities |
-| `npm run migration:run` | Aplica migrations pendentes |
-| `npm run migration:revert` | Reverte última migration |
+```bash
+npm run lint          # ESLint (não altera arquivos)
+npm run lint:fix     # ESLint com correção automática
+npm run build
+npm test
+npm run test:e2e      # aplica migrations (pretest) + suite E2E
+npm run test:cov
+npm run migration:run
+npm run migration:revert
+```
 
-## Endpoints implementados
+## Endpoints
 
-### Infraestrutura
+Contratos completos (DTOs, exemplos, códigos de erro) em `/docs`.
+
+### Infrastructure
 
 | Método | Rota | Descrição |
 |---|---|---|
 | GET | `/health` | Health check (inclui ping ao PostgreSQL) |
 | GET | `/docs` | Swagger UI |
 
-### Colaboradores
+### Collaborators
 
 | Método | Rota | Descrição |
 |---|---|---|
 | POST | `/collaborators` | Cadastro |
-| GET | `/collaborators` | Listagem paginada (`page`, `limit`, filtros `name`, `email`, `status`) |
+| GET | `/collaborators` | Listagem paginada (`page`, `limit`, `name`, `email`, `status`) |
 | GET | `/collaborators/:id` | Busca por ID |
-| DELETE | `/collaborators/:id` | Soft delete (204 No Content) |
+| DELETE | `/collaborators/:id` | Soft delete (`204`) |
 
-**Regras atuais:**
+`status`: `active` (padrão), `deleted`, `all`.
 
-- E-mail único entre colaboradores **ativos** (índice parcial `WHERE deleted_at IS NULL`)
-- Soft-deleted retorna **404** em `GET /:id` e mutações
-- E-mail de colaborador removido pode ser reutilizado em novo cadastro
-- Listagem padrão (`status=active`) exclui removidos; use `status=deleted` ou `status=all` para auditoria
+### Document Types
 
-**Query param `status` (GET /collaborators):**
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/document-types` | Cadastro |
+| GET | `/document-types` | Listagem paginada (`page`, `limit`, `name`, `status`) |
+| GET | `/document-types/:id` | Busca por ID |
+| DELETE | `/document-types/:id` | Soft delete (`204`) |
 
-| Valor | Comportamento |
-|---|---|
-| `active` | Padrão — somente colaboradores ativos |
-| `deleted` | Somente soft-deleted (resposta inclui `deletedAt`) |
-| `all` | Ativos e removidos (`deletedAt` presente nos removidos) |
+### Document Requirements
 
-## Estrutura do projeto
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/document-requirements` | Vincula colaborador ↔ tipo |
+| GET | `/document-requirements` | Listagem paginada |
+| GET | `/document-requirements/:id` | Busca por ID |
+| DELETE | `/document-requirements/:id` | Soft delete / desvínculo (`204`) |
 
+### Pending Documents
+
+| Método | Rota | Descrição |
+|---|---|---|
+| GET | `/document-requirements/pending` | Requisitos ativos sem versão ativa (paginado + filtros) |
+
+### Document Versions
+
+| Método | Rota | Descrição |
+|---|---|---|
+| POST | `/document-requirements/:requirementId/versions` | Envio lógico (cria versão; header `Idempotency-Key` obrigatório) |
+| GET | `/document-requirements/:requirementId/versions` | Histórico de versões |
+| GET | `/document-versions/:id` | Busca versão por ID |
+
+### Statistics
+
+| Método | Rota | Descrição |
+|---|---|---|
+| GET | `/statistics` | Dashboard consolidado (percentual, totais, tipos pendentes, últimos envios) |
+
+## Modelagem
+
+Todas as entidades abaixo estão **implementadas**. Tabelas no singular.
+
+| Entidade | Tabela | Soft delete | Observação |
+|---|---|---|---|
+| Collaborator | `collaborator` | Sim | E-mail único entre ativos |
+| DocumentType | `document_type` | Sim | Nome único entre ativos |
+| DocumentRequirement | `document_requirement` | Sim (desvínculo) | Único par colaborador+tipo ativo |
+| DocumentVersion | `document_version` | Não (append-only) | Uma ativa por requisito; idempotência |
+
+```mermaid
+erDiagram
+  collaborator ||--o{ document_requirement : has
+  document_type ||--o{ document_requirement : requires
+  document_requirement ||--o{ document_version : versions
+
+  collaborator {
+    uuid id PK
+    varchar name
+    varchar email
+    timestamptz created_at
+    timestamptz updated_at
+    timestamptz deleted_at
+  }
+
+  document_type {
+    uuid id PK
+    varchar name
+    varchar description
+    timestamptz created_at
+    timestamptz updated_at
+    timestamptz deleted_at
+  }
+
+  document_requirement {
+    uuid id PK
+    uuid collaborator_id FK
+    uuid document_type_id FK
+    timestamptz created_at
+    timestamptz updated_at
+    timestamptz deleted_at
+  }
+
+  document_version {
+    uuid id PK
+    uuid requirement_id FK
+    int version_number
+    boolean is_active
+    varchar document_reference
+    varchar idempotency_key
+    varchar request_hash
+    timestamptz submitted_at
+    timestamptz created_at
+  }
 ```
+
+## Arquitetura
+
+```text
+HTTP Request
+    ↓
+Controller      → contrato HTTP, status codes, DTOs
+    ↓
+Service         → regras de domínio, orquestração, exceções
+    ↓
+Repository      → QueryBuilder, agregações, soft delete explícito
+    ↓
+TypeORM
+    ↓
+PostgreSQL
+```
+
+Mapper converte Entity → DTO de resposta. Filter global padroniza erros (`statusCode`, `error`, `message`, `timestamp`, `path`).
+
+Estrutura:
+
+```text
 src/
-├── collaborators/          # Módulo de domínio (implementado)
-├── common/                 # DTOs compartilhados, filtros, utilitários
-├── config/                 # Validação de variáveis de ambiente (Joi)
-├── database/               # TypeORM, data-source CLI, migrations
-├── health/                 # Health check
+├── collaborators/
+├── document-types/
+├── document-requirements/
+├── document-versions/
+├── statistics/
+├── common/
+├── config/
+├── database/          # data-source CLI + migrations
+├── health/
 ├── app.module.ts
 └── main.ts
 ```
 
-### Camadas por módulo de domínio
+## Regras centrais
 
-```
-Controller  → HTTP, status codes, DTOs de entrada/saída
-Service     → Regras de negócio, orquestração, exceções de domínio
-Repository  → Acesso a dados (QueryBuilder, soft delete explícito)
-Entity      → Mapeamento ORM + constraints declarativas
-Mapper      → Entity ↔ DTO de resposta
-DTO         → Validação de input (class-validator)
-```
-
----
-
-## Decisões arquiteturais
-
-### 1. Evolução do banco somente via migrations
-
-**Decisão:** `synchronize: false` fixo no código (não configurável por env).
-
-**Motivo:** Evita alteração acidental de schema em produção. Toda mudança passa por migration versionada e revisável.
-
-### 2. TypeORM 0.3.31 (não 1.1.x)
-
-**Decisão:** Manter a linha `0.3.31` (dist-tag `legacy` no npm).
-
-**Alternativa descartada:** `typeorm@1.1.0` ("latest") — CLI quebrado (`ERR_REQUIRE_ESM` no `yargs`), impossibilitando `migration:generate` e `migration:run`.
-
-**Trade-off:** Versão estável e comprovada vs. features mais novas da 1.x. Para este projeto, CLI funcional é requisito inegociável.
-
-### 3. UUID via `gen_random_uuid()` (pgcrypto)
-
-**Decisão:** `uuidExtension: 'pgcrypto'` no TypeORM.
-
-**Alternativa descartada:** `uuid-ossp` / `uuid_generate_v4()` — exige extensão extra; PostgreSQL 13+ já possui `gen_random_uuid()` nativamente.
-
-### 4. Soft delete com índice único parcial
-
-**Decisão:** `@DeleteDateColumn` + `UNIQUE (email) WHERE deleted_at IS NULL`.
-
-**Motivo:** Permite reutilizar e-mail de colaborador removido sem perder histórico. Consultas operacionais filtram `deleted_at IS NULL` explicitamente no repository (não dependem de comportamento implícito do ORM).
-
-### 5. Unicidade de e-mail: check + constraint
-
-**Decisão:** Service verifica e-mail antes de inserir **e** captura violação de unique (`23505`) do PostgreSQL.
-
-**Motivo:** A checagem prévia dá resposta rápida no caso comum; a constraint garante consistência sob concorrência (duas requisições simultâneas).
-
-### 6. Filtro global de exceções padronizado
-
-**Decisão:** `AllExceptionsFilter` com shape fixo:
-
-```json
-{
-  "statusCode": 404,
-  "error": "Not Found",
-  "message": "...",
-  "timestamp": "2026-07-27T...",
-  "path": "/collaborators/..."
-}
-```
-
-**Motivo:** Respostas uniformes independentemente da origem (validação, domínio, erro inesperado). Stack trace não vaza em produção.
-
-### 7. Paginação offset/limit
-
-**Decisão:** `page` + `limit` (máximo 100), ordenação estável `created_at DESC, id DESC`.
-
-**Alternativa descartada:** Cursor-based — mais complexo sem requisito de deep-pagination neste volume.
-
-### 8. Estatísticas derivadas (Dashboard)
-
-**Decisão:** `GET /statistics` com agregações em tempo de leitura via QueryBuilder — sem tabela/materialized view de snapshot e sem status persistido.
-
-**Motivo:** Poucas tabelas, volume adequado ao desafio, sempre consistente com soft delete. Evita invalidação de cache. Detalhes em [Dashboard](#dashboard-estatísticas).
-
-### 9. Envio lógico de documentos (domínio futuro)
-
-**Decisão planejada:** `DocumentVersion` como evento de negócio, sem storage de arquivo (S3/upload).
-
-**Motivo:** Escopo do teste é versionamento e regras, não gestão de arquivos.
-
-### 10. Sem autenticação
-
-**Decisão:** Nenhum middleware de auth.
-
-**Motivo:** Restrição explícita do enunciado.
-
-### 11. Repository concreto (sem contratos / ports)
-
-**Decisão:** O Service injeta a **classe concreta** do Repository (ex.: `CollaboratorsRepository`), sem interface `ICollaboratorsRepository` + token de injeção.
-
-**Alternativa considerada:** Inversão de dependência com contratos, para “desacoplar a API do TypeORM” e facilitar troca de ORM ou banco.
-
-**Por que descartamos a abstração neste projeto:**
-
-| Camada | Acoplamento real |
+| Tema | Regra |
 |---|---|
-| Migrations | CLI e formato TypeORM (`data-source.ts`, `migration:run`) |
-| Entities | Decorators TypeORM (`@Entity`, `@DeleteDateColumn`, `@Index`) |
-| Repository | `QueryBuilder`, `withDeleted()`, `softDelete()`, SQL Postgres (`ILIKE`) |
-| Banco | Índices parciais, `gen_random_uuid()`, constraints específicas de PostgreSQL |
+| Soft delete | Removidos retornam `404` em mutações/busca operacional; listagens usam `status` |
+| Vínculo | Um par ativo colaborador ↔ tipo por vez (unique parcial) |
+| Pendência | Derivada: requisito ativo **sem** versão ativa |
+| Histórico | Versões append-only; reenvio desativa a ativa e cria a próxima |
+| Uma ativa | Constraint parcial `UNIQUE (requirement_id) WHERE is_active = true` |
+| Concorrência | `SELECT FOR UPDATE` no requisito dentro da transação de envio |
+| Idempotência | Header `Idempotency-Key` + `request_hash`; replay `200` / conflito `409` |
+| Estatísticas | Agregadas em leitura via QueryBuilder (`GET /statistics`) |
 
-Enquanto migrations e entities forem TypeORM, **trocar de ORM exige reescrever persistência inteira** — uma interface no repository não elimina esse custo; apenas move o acoplamento para a implementação concreta (onde ele já está de forma explícita).
+Status `PENDING` / `COMPLETED` **não** são colunas — sempre derivados na consulta.
 
-**O que mantemos (e consideramos suficiente):**
+## Concorrência e atomicidade
 
-- Separação **Controller → Service → Repository** — regras de negócio não usam `QueryBuilder`
-- Injeção de dependência via NestJS (container resolve providers)
-- Testes unitários com mock do repository
-- Acoplamento TypeORM/Postgres **contido** em Entity + Repository + migrations (fronteira consciente de infraestrutura)
-
-**Trade-off:** Menos boilerplate (sem interface + symbol + `useClass` por módulo) e decisão arquitetural honesta (“TypeORM é a stack de persistência escolhida”) vs. portabilidade teórica de ORM que o escopo do teste não exige.
-
----
-
-## Modelagem de domínio (visão geral)
-
-Entidades planejadas — **apenas `Collaborator` está implementada**:
-
-```
-Collaborator 1 ── N DocumentRequirement N ── 1 DocumentType
-                              │
-                              1
-                              │
-                              N
-                       DocumentVersion
-```
-
-| Entidade | Soft delete | Status |
-|---|---|---|
-| Collaborator | Sim | Implementado |
-| DocumentType | Sim | Pendente |
-| DocumentRequirement | Sim (desvínculo) | Pendente |
-| DocumentVersion | Não (append-only) | Pendente |
-
----
-
-## Trade-offs enfrentados
-
-### PostgreSQL: porta 5434 vs 5432
-
-**Problema:** PostgreSQL local (v17) ocupava 5432; outro container usava 5433.
-
-**Solução:** Mapear Docker Compose na porta **5434** e documentar no `.env.example`.
-
-**Lição:** Em dev com múltiplos Postgres, a porta não pode ser assumida como 5432.
-
-### Connection pool explícito
-
-**Problema:** Pool do `node-postgres` existia implicitamente (`max: 10`), mas não era configurável.
-
-**Solução:** `DB_POOL_SIZE`, `DB_POOL_IDLE_TIMEOUT_MS`, `DB_CONNECTION_TIMEOUT_MS` via env.
-
-**Trade-off:** Mais variáveis vs. controle previsível em produção.
-
-### npm audit: overrides vs `--force`
-
-**Problema:** 28 vulnerabilidades high reportadas; `npm audit fix --force` sugeria instalar `typeorm@1.1.0`, `@nestjs/cli@6`, downgrades incompatíveis.
-
-**Solução:** `overrides` pontuais no `package.json`:
-
-```json
-{
-  "@nestjs/swagger": { "js-yaml": "5.2.2" },
-  "typeorm": { "glob": "^11.0.0" },
-  "jest": { "glob": "^11.0.0" }
-}
-```
-
-**Resultado:**
-
-| Escopo | Antes | Depois |
-|---|---|---|
-| Produção (`npm audit --omit=dev`) | 6 high | **0** |
-| Total (incl. dev) | 28 high | **24 high** |
-
-**Trade-off:** ~24 vulnerabilidades restantes são transitivas de **ESLint**, **@nestjs/cli** e **test-exclude** (tooling de dev, não runtime). Forçar `minimatch@10` globalmente quebraria ESLint (API incompatível com v3). Aceito conscientemente.
-
-### Testes e2e no mesmo banco de desenvolvimento
-
-**Problema:** Não há banco de teste isolado configurado. Suites e2e compartilham o mesmo Postgres.
-
-**Solução:**
-- `TRUNCATE` de `document_version`, `document_requirement`, `collaborator` e `document_type` antes/depois de cada suite
-- `maxWorkers: 1` no `jest-e2e.json` (execução serial)
-
-**Motivo:** Workers paralelos no mesmo banco causam deadlock em `TRUNCATE` e contaminação de dados entre suites (409/404 flaky).
-
-**Trade-off:** Suite e2e mais lenta vs. estabilidade. Evolução futura: `.env.test` + Postgres dedicado ou Testcontainers.
-
-### TypeScript: entidades e DTOs decorados
-
-**Problema:** Erros TS2564 (`Property has no initializer`) e TS2593 (`Cannot find name 'describe'`) no editor.
-
-**Solução no `tsconfig.json`:**
-
-```json
-{
-  "strictPropertyInitialization": false,
-  "useDefineForClassFields": false,
-  "types": ["node", "jest"]
-}
-```
-
-**Motivo:** Entidades TypeORM e DTOs são populados pelo framework/ORM, não por construtor. `useDefineForClassFields: false` é recomendação oficial do TypeORM para targets ES2022+.
-
-### Check-then-act no cadastro de colaborador
-
-**Problema:** Verificar e-mail antes de salvar é redundante quando existe unique parcial no banco.
-
-**Solução:** Manter ambos — check para UX (409 rápido) + constraint para corrida.
-
-**Trade-off:** Duas camadas de proteção vs. simplicidade de uma única fonte de verdade. Escolhemos defesa em profundidade.
-
-### Concorrência no envio de Document Versions
-
-**Problema (race condition):** Uma transação simples (desativar + inserir) **não serializa** leituras concorrentes do mesmo requisito. Duas requisições podem ler o mesmo `MAX(version_number)`, calcular o mesmo próximo número e tentar criar duas versões `4` — ou deixar mais de uma `is_active = true` por um instante até a constraint falhar.
-
-**Solução:** Lock pessimista no **agregado** `DocumentRequirement` (`SELECT ... FOR UPDATE` via TypeORM `pessimistic_write`), **dentro** da mesma transação que:
+No envio de versão, a API abre uma transação e faz `SELECT ... FOR UPDATE` (`pessimistic_write`) na linha do **DocumentRequirement**. Dentro do mesmo lock:
 
 1. valida requisito / colaborador / tipo ativos;
-2. desativa a versão ativa;
-3. calcula o próximo `versionNumber`;
-4. cria a nova versão ativa.
+2. trata idempotência;
+3. desativa a versão ativa (se houver);
+4. calcula o próximo `versionNumber`;
+5. cria a nova versão ativa.
 
-Assim, envios do **mesmo** requisito enfileiram; requisitos **diferentes** continuam em paralelo (sem lock global, sem mutex em memória, sem Redis/fila).
+Envios do **mesmo** requisito são serializados. Requisitos **diferentes** seguem em paralelo.
 
-**Por que no requisito (e não na versão):** o requisito é a unidade de consistência da sequência. Travar só a versão ativa falharia no primeiro envio (ainda não existe versão) e não cobriria bem o cálculo do próximo número.
+**Limite da estratégia:** o lock está no requisito. Colaborador e tipo **não** são bloqueados durante o envio — a validação de “ativo” ocorre sob o lock do requisito, mas não serializa mutações nesses agregados. Soft delete concorrente do requisito com o envio é serializado pela mesma linha.
 
-**Por que as constraints continuam necessárias:**
+Constraints permanecem como última camada:
 
 | Constraint | Proteção |
 |---|---|
-| `UNIQUE (requirement_id, version_number)` | impede duplicidade de número mesmo sob bug/race residual |
-| `UNIQUE (requirement_id) WHERE is_active = true` | garante no máximo uma versão ativa |
+| `UNIQUE (requirement_id, version_number)` | impede número duplicado |
+| `UNIQUE (requirement_id) WHERE is_active = true` | no máximo uma ativa |
 
-São a **última camada**; o lock é a camada de ordenação/prevenção.
+O lock é no PostgreSQL: funciona entre múltiplas instâncias da API. Mutex em memória não seria suficiente.
 
-**Múltiplas instâncias da API:** o lock é no PostgreSQL (linha), então funciona entre pods/processos. Mutex em memória só protegeria uma instância.
+**Concorrência ≠ idempotência:** operações distintas simultâneas geram versões distintas; retries da mesma operação reutilizam a chave.
 
-**Soft delete concorrente com envio:** o `FOR UPDATE` na linha do requisito serializa com o soft delete (que atualiza `deleted_at`). O resultado pode ser envio concluído antes da remoção **ou** 404 por requisito inativo — nunca duas ativas, nunca número duplicado, nunca versão “órfã ativa” criada **depois** do soft delete na mesma linha bloqueada.
+## Idempotência
 
-**Concorrência ≠ idempotência:**
+| Aspecto | Comportamento |
+|---|---|
+| Escopo | Por `(requirementId, Idempotency-Key)` |
+| Armazenamento | Colunas em `document_version` + unique |
+| Hash | SHA-256 do payload (`documentReference`) |
+| Replay | Mesma chave + mesmo hash → `200` (versão existente) |
+| Conflito | Mesma chave + hash diferente → `409` |
+| Retry vs nova operação | Mesma chave = retry; chave nova = nova versão |
 
-- **Concorrência (etapa 6):** operações **distintas** simultâneas geram versões **distintas** e ordenadas (4, 5, 6).
-- **Idempotência (etapa 7):** retries da **mesma** operação não devem criar versões extras.
+O header é obrigatório no `POST .../versions`. Ausente ou inválido → `400`.
 
-### Idempotência no envio de Document Versions
-
-**Por que retries acontecem:** timeouts de rede, proxies, clients HTTP com retry automático e falhas transitórias fazem o cliente reenviar a **mesma** intenção de operação.
-
-**Diferença:**
-
-| Conceito | Entrada | Saída |
-|---|---|---|
-| Concorrência | 3 operações distintas | versões 4, 5 e 6 |
-| Idempotência | 3 retries da mesma operação | apenas a versão 4 |
-
-**Estratégia:** header obrigatório `Idempotency-Key` (UUID) + colunas `idempotency_key` / `request_hash` em `document_version` + `UNIQUE (requirement_id, idempotency_key)`.
-
-**Por que `requestHash`:** a mesma chave com payload diferente é erro do cliente → **409**. Só a chave não basta (evitaria detectar reuso indevido).
-
-**Por que não só hash:** hashes iguais de payloads distintos são colisões teóricas; a chave é o identificador da operação lógica escolhido pelo cliente. Hash valida **compatibilidade** do retry.
-
-**Por que não Redis / cache / fila / mutex:** o desafio exige persistência no PostgreSQL junto do agregado; funciona entre múltiplas instâncias sem store extra; o `FOR UPDATE` no requisito já serializa a checagem/criação.
-
-**Reutilização da resposta:**
+## Pendências
 
 ```text
-Client
-  └─ POST /document-requirements/:id/versions
-       Header: Idempotency-Key
-       Body: { documentReference }
-            │
-            ▼
-       BEGIN + FOR UPDATE no requisito
-            │
-            ▼
-       Existe (requirementId, key)?
-         ├─ Sim ─ mesmo hash? ─ Sim → 200 (versão existente)
-         │                    └─ Não → 409 Conflict
-         └─ Não → cria versão + persiste key/hash → 201
-```
-
-**Importante:** o lock pessimista continua ativo. Idempotência não substitui concorrência — complementa.
-
-### Documentos Pendentes
-
-**Definição (derivada, não persistida):** um documento é **pendente** quando existe um `DocumentRequirement` ativo **e** não existe `DocumentVersion` com `is_active = true` para esse requisito.
-
-```text
-DocumentRequirement
+DocumentRequirement ativo
         │
         ▼
  Existe versão ativa?
    ├─ SIM → não é pendente
-   └─ NÃO → documento pendente
+   └─ NÃO → pendente
 ```
 
-**Por que não persistir `PENDING`:** evita inconsistência com soft delete, reenvios e corridas. A verdade fica nas tabelas de requisito/versão; o status é calculado na leitura.
+Consulta: `LEFT JOIN` na versão ativa + `WHERE activeVersion.id IS NULL` (sem N+1). Endpoint: `GET /document-requirements/pending`.
 
-**Consulta:** `LEFT JOIN document_version` (somente `is_active = true`) + `WHERE activeVersion.id IS NULL`, com joins em colaborador e tipo — **uma query**, sem N+1.
+## Estatísticas
 
-**Benefícios:** sempre consistente com o histórico; sem jobs de invalidação; índice parcial de versão ativa acelera o anti-join.
+Endpoint único `GET /statistics`:
 
-**Complexidade:** O(log n) com índices adequados sobre filtro + ordenação; custo dominado pelo anti-join em `document_version`.
-
-**Índices utilizados:**
-
-| Índice | Papel |
+| Campo | Conteúdo |
 |---|---|
-| `uq_document_version_requirement_active` (`WHERE is_active = true`) | localiza/ausência de versão ativa por requisito |
-| `idx_document_requirement_deleted_at_created_at` | filtro operacional + `ORDER BY created_at` |
-| `idx_document_requirement_collaborator_id` / `document_type_id` | filtros por colaborador/tipo |
-
-Endpoint: `GET /document-requirements/pending`.
-
-### Dashboard (Estatísticas)
-
-**Por que um único endpoint (`GET /statistics`):** o dashboard é uma **visão consolidada** consumida de uma vez pelo cliente. Fragmentar em vários endpoints aumentaria latência (waterfall), acoplaria o frontend a N contratos e dificultaria consistência temporal entre métricas. Um payload agregado é o padrão para painéis de leitura.
-
-**Como o percentual é calculado:**
+| `completionPercentage` | `(completed / requirements) * 100`, 2 casas; `0` se vazio |
+| `totals` | `requirements`, `completed`, `pending` |
+| `mostPendingDocumentTypes` | agrupado por tipo; `pendingCount DESC`, `name ASC` |
+| `latestSubmissions` | até 10 envios; `submittedAt DESC` |
 
 ```text
-Requirements ativos
+Requirements ativos (colaborador/tipo ativos)
         │
         ▼
  Existe versão ativa?
    ├─ SIM → completed
    └─ NÃO → pending
-
-completionPercentage = (completed / requirements) * 100  // 2 casas; 0 se requirements = 0
 ```
 
-**Pendências no dashboard:** mesma regra derivada da listagem de pendentes (requisito ativo sem versão ativa). Status **não** é persistido.
+Três agregações independentes rodam em paralelo (`Promise.all`). **Sob escritas concorrentes, pode existir pequena diferença temporal entre os blocos da resposta.** Um snapshot transacional com isolamento apropriado seria evolução se consistência temporal estrita fosse necessária.
 
-**Estratégia das agregações (3 queries em paralelo via `Promise.all`):**
+Sistema sem dados → `200` com zeros e listas vazias (nunca `404`).
 
-1. **Totais** — `COUNT` + `CASE` com `LEFT JOIN` na versão ativa  
-2. **Tipos mais pendentes** — `GROUP BY` tipo ativo, `ORDER BY pendingCount DESC, name ASC`  
-3. **Últimos envios** — projeção de campos (`SELECT` explícito), `ORDER BY submittedAt DESC`, `LIMIT 10`
+## Testes
 
-Cada agregação é distinta; juntá-las em um SQL monólito atrapalharia legibilidade sem ganho claro. Evita-se N+1 e `SELECT *`.
-
-**Soft delete:** requisitos, tipos e colaboradores removidos **não** entram nas métricas operacionais (joins com `deletedAt IS NULL`, alinhado à listagem de pendentes).
-
-**Índices utilizados (já existentes):**
-
-| Índice | Papel |
+| Tipo | Escopo |
 |---|---|
-| `uq_document_version_requirement_active` | join/anti-join de versão ativa |
-| `idx_document_version_submitted_at` | ordenação dos últimos envios |
-| `idx_document_requirement_deleted_at_created_at` | filtro de requisitos ativos |
-| FKs / índices por `document_type_id` | agrupamento de pendências por tipo |
+| Unitários | Services/controllers com repository mockado (`80` testes) |
+| E2E | PostgreSQL real via Docker / CI service (`104` testes) |
+| Cobertura unitária | Statements **67.86%** · Branches **58.10%** · Functions **50.42%** · Lines **67.86%** (`npm run test:cov`) |
 
-**Complexidade:** agregações O(n) no pior caso com seq scan; com índices, próximo de O(n log n) / index scans sobre o conjunto filtrado. Adequado a dezenas de milhares de requisitos no escopo do desafio.
+E2E cobre soft delete, concorrência, rollback forçado, idempotência, pendências e estatísticas. Usa o banco configurado por env, aplica migrations (`pretest:e2e`), faz `TRUNCATE ... CASCADE` entre suites e **não** depende de dados manuais nem de sleeps.
 
----
+`test/jest-e2e.json` define `maxWorkers: 1`: a suíte é **serial** porque compartilha um único Postgres. Workers paralelos geram deadlock em `TRUNCATE` e contaminação entre suites.
 
-## Segurança (escopo atual)
+A cobertura unitária usa `coverageProvider: "v8"` (compatível com Node 22+; a instrumentação babel padrão falhava no Node 25). Repositórios, modules e health ficam parcialmente descobertos nos unitários — o comportamento de persistência é coberto pelos E2E.
 
-- Queries parametrizadas via QueryBuilder (sem concatenação SQL)
-- `ValidationPipe` com `whitelist` e `forbidNonWhitelisted` (proteção contra mass assignment)
-- `ParseUUIDPipe` em rotas com `:id`
-- Soft-deleted tratado como inexistente (404, sem vazamento)
-- Swagger exposto sem auth — aceitável em dev; em produção, restringir por ambiente ou rede
+## CI
 
----
+Workflow [`.github/workflows/ci.yml`](.github/workflows/ci.yml) em `push`/`pull_request` para `main`:
 
-## Escopo implementado (módulos)
+```text
+checkout → setup Node 22 (cache npm) → npm ci
+  → migrations → lint → build → unit tests → E2E
+```
 
-1. Collaborators · Document Types · Document Requirements · Document Versions
-2. Concorrência · Idempotência · Consulta de pendentes · **Statistics (Dashboard)**
+PostgreSQL 16 sobe como service container com credenciais descartáveis de CI (`api_documentos_ci`). Variáveis alinhadas à validação Joi e ao `data-source.ts`.
 
-Etapa de finalização (polish / entrega) fica fora deste módulo.
+## Decisões e trade-offs
+
+### Migrations only (`synchronize: false`)
+
+Schema evolui só por migrations versionadas (`up`/`down`). Evita alteração acidental em runtime.
+
+### TypeORM 0.3.31
+
+Linha estável com CLI funcional. `typeorm@1.x` (“latest”) quebrava o CLI (`ERR_REQUIRE_ESM`).
+
+### UUID via `pgcrypto` (`gen_random_uuid()`)
+
+Nativo no PostgreSQL 13+; dispensa `uuid-ossp`.
+
+### Soft delete + unique parcial
+
+Permite reutilizar e-mail/nome após remoção sem perder histórico. Repositories filtram `deleted_at IS NULL` explicitamente.
+
+### Repository concreto (sem ports)
+
+Controller → Service → Repository concreto. Enquanto entities/migrations forem TypeORM, uma interface não elimina o acoplamento real — apenas adiciona boilerplate. Persistência fica contida em Entity + Repository + migrations.
+
+### Paginação offset/limit
+
+`page` + `limit` (máx. 100), ordenação estável. Suficiente para o volume do desafio.
+
+### Envio lógico (sem storage)
+
+`documentReference` é referência textual — não há upload/S3. Escopo do teste é versionamento e regras.
+
+### Sem autenticação
+
+Restrição explícita do enunciado.
+
+### Pool e overrides npm
+
+Pool configurável via env. Overrides pontuais (`js-yaml`, `glob`) mitigam advisories sem `npm audit fix --force` (que sugeria TypeORM/CLI incompatíveis).
+
+### E2E serial no mesmo banco
+
+Estabilidade > paralelismo neste escopo. Evolução: banco de teste dedicado ou Testcontainers.
+
+### Cobertura com provider V8
+
+`coverageProvider: "v8"` no Jest: a instrumentação babel padrão falhava ao coletar cobertura no Node 25 (`ERR_INVALID_ARG_TYPE` em `util`). V8 funciona em Node 22 (CI) e 25 (dev local).
 
 ---
 
