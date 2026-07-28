@@ -5,7 +5,6 @@ import { IsInt, IsOptional, Max, Min } from 'class-validator';
 export const MAX_PAGE_SIZE = 100;
 export const DEFAULT_PAGE_SIZE = 20;
 
-
 export class PaginationQueryDto {
   @ApiPropertyOptional({ minimum: 1, default: 1 })
   @IsOptional()

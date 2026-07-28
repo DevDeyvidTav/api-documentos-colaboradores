@@ -1,5 +1,6 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
+import { randomUUID } from 'crypto';
 import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
@@ -92,7 +93,20 @@ describe('DocumentVersionsController (e2e)', () => {
     };
   };
 
-  const submitVersion = (requirementId: string, documentReference: string) =>
+  const submitVersion = (
+    requirementId: string,
+    documentReference: string,
+    idempotencyKey: string = randomUUID(),
+  ) =>
+    request(server())
+      .post(`/document-requirements/${requirementId}/versions`)
+      .set('Idempotency-Key', idempotencyKey)
+      .send({ documentReference });
+
+  const submitVersionWithoutKey = (
+    requirementId: string,
+    documentReference: string,
+  ) =>
     request(server())
       .post(`/document-requirements/${requirementId}/versions`)
       .send({ documentReference });
@@ -476,6 +490,145 @@ describe('DocumentVersionsController (e2e)', () => {
         count: number;
       }>;
       expect(duplicateNumbers).toHaveLength(0);
+    });
+  });
+
+  describe('idempotency', () => {
+    it('returns 201 on the first call with a given Idempotency-Key', async () => {
+      const { requirementId } = await seedRequirement();
+      const key = randomUUID();
+
+      const response = await submitVersion(
+        requirementId,
+        'documents/cpf-v4.pdf',
+        key,
+      ).expect(201);
+      const body = response.body as DocumentVersionApiResponse;
+
+      expect(body.versionNumber).toBe(1);
+      expect(body.documentReference).toBe('documents/cpf-v4.pdf');
+    });
+
+    it('returns 200 with the same version on retry with same key and payload', async () => {
+      const { requirementId } = await seedRequirement();
+      const key = randomUUID();
+
+      const first = await submitVersion(
+        requirementId,
+        'documents/cpf-v4.pdf',
+        key,
+      ).expect(201);
+      const firstBody = first.body as DocumentVersionApiResponse;
+
+      const second = await submitVersion(
+        requirementId,
+        'documents/cpf-v4.pdf',
+        key,
+      ).expect(200);
+      const secondBody = second.body as DocumentVersionApiResponse;
+
+      expect(secondBody.id).toBe(firstBody.id);
+      expect(secondBody.versionNumber).toBe(firstBody.versionNumber);
+
+      const history = await request(server())
+        .get(`/document-requirements/${requirementId}/versions`)
+        .expect(200);
+      expect(history.body).toHaveLength(1);
+    });
+
+    it('returns 409 when the same key is reused with a different payload', async () => {
+      const { requirementId } = await seedRequirement();
+      const key = randomUUID();
+
+      await submitVersion(requirementId, 'documents/cpf-v1.pdf', key).expect(
+        201,
+      );
+
+      await submitVersion(
+        requirementId,
+        'documents/cpf-v2-different.pdf',
+        key,
+      ).expect(409);
+
+      const history = await request(server())
+        .get(`/document-requirements/${requirementId}/versions`)
+        .expect(200);
+      expect(history.body).toHaveLength(1);
+      expect(
+        (history.body as DocumentVersionApiResponse[])[0].documentReference,
+      ).toBe('documents/cpf-v1.pdf');
+    });
+
+    it('deduplicates three simultaneous retries with the same key and payload', async () => {
+      const { requirementId } = await seedRequirement();
+      const key = randomUUID();
+
+      const responses = await Promise.all([
+        submitVersion(requirementId, 'documents/retry.pdf', key),
+        submitVersion(requirementId, 'documents/retry.pdf', key),
+        submitVersion(requirementId, 'documents/retry.pdf', key),
+      ]);
+
+      const statuses = responses.map((r) => r.status).sort((a, b) => a - b);
+      expect(statuses).toEqual([200, 200, 201]);
+
+      const ids = new Set(
+        responses.map((r) => (r.body as DocumentVersionApiResponse).id),
+      );
+      expect(ids.size).toBe(1);
+
+      const history = await request(server())
+        .get(`/document-requirements/${requirementId}/versions`)
+        .expect(200);
+      expect(history.body).toHaveLength(1);
+      expect(
+        (history.body as DocumentVersionApiResponse[])[0].versionNumber,
+      ).toBe(1);
+    });
+
+    it('treats different Idempotency-Keys as distinct operations', async () => {
+      const { requirementId } = await seedRequirement();
+
+      const first = await submitVersion(
+        requirementId,
+        'documents/v1.pdf',
+        randomUUID(),
+      ).expect(201);
+      const second = await submitVersion(
+        requirementId,
+        'documents/v2.pdf',
+        randomUUID(),
+      ).expect(201);
+      const third = await submitVersion(
+        requirementId,
+        'documents/v3.pdf',
+        randomUUID(),
+      ).expect(201);
+
+      expect((first.body as DocumentVersionApiResponse).versionNumber).toBe(1);
+      expect((second.body as DocumentVersionApiResponse).versionNumber).toBe(2);
+      expect((third.body as DocumentVersionApiResponse).versionNumber).toBe(3);
+
+      const history = await request(server())
+        .get(`/document-requirements/${requirementId}/versions`)
+        .expect(200);
+      expect(history.body).toHaveLength(3);
+    });
+
+    it('rejects a missing Idempotency-Key with 400', async () => {
+      const { requirementId } = await seedRequirement();
+      await submitVersionWithoutKey(requirementId, 'documents/x.pdf').expect(
+        400,
+      );
+    });
+
+    it('rejects an invalid Idempotency-Key with 400', async () => {
+      const { requirementId } = await seedRequirement();
+      await submitVersion(
+        requirementId,
+        'documents/x.pdf',
+        'not-a-uuid',
+      ).expect(400);
     });
   });
 });

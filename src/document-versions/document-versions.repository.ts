@@ -60,6 +60,18 @@ export class DocumentVersionsRepository {
       .getOne();
   }
 
+  findByRequirementAndIdempotencyKey(
+    manager: EntityManager,
+    requirementId: string,
+    idempotencyKey: string,
+  ): Promise<DocumentVersion | null> {
+    return manager
+      .createQueryBuilder(DocumentVersion, 'version')
+      .where('version.requirementId = :requirementId', { requirementId })
+      .andWhere('version.idempotencyKey = :idempotencyKey', { idempotencyKey })
+      .getOne();
+  }
+
   async deactivateActiveVersions(
     manager: EntityManager,
     requirementId: string,
@@ -93,6 +105,8 @@ export class DocumentVersionsRepository {
       requirementId: string;
       versionNumber: number;
       documentReference: string;
+      idempotencyKey: string;
+      requestHash: string;
       submittedAt: Date;
     },
   ): Promise<DocumentVersion> {
@@ -100,6 +114,8 @@ export class DocumentVersionsRepository {
       requirementId: data.requirementId,
       versionNumber: data.versionNumber,
       documentReference: data.documentReference,
+      idempotencyKey: data.idempotencyKey,
+      requestHash: data.requestHash,
       submittedAt: data.submittedAt,
       isActive: true,
     });

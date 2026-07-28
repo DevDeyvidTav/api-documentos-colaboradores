@@ -1,6 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
-
 export class ErrorResponseDto {
   @ApiProperty({ example: 400, description: 'Código HTTP da resposta.' })
   statusCode: number;

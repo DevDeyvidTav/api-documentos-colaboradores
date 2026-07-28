@@ -8,7 +8,6 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-
 @Entity('collaborator')
 @Index('uq_collaborator_email_active', ['email'], {
   unique: true,

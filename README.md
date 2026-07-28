@@ -350,8 +350,47 @@ São a **última camada**; o lock é a camada de ordenação/prevenção.
 
 **Concorrência ≠ idempotência:**
 
-- **Concorrência (esta etapa):** operações **distintas** simultâneas geram versões **distintas** e ordenadas (4, 5, 6).
-- **Idempotência (etapa futura):** retries da **mesma** operação não devem criar versões extras.
+- **Concorrência (etapa 6):** operações **distintas** simultâneas geram versões **distintas** e ordenadas (4, 5, 6).
+- **Idempotência (etapa 7):** retries da **mesma** operação não devem criar versões extras.
+
+### Idempotência no envio de Document Versions
+
+**Por que retries acontecem:** timeouts de rede, proxies, clients HTTP com retry automático e falhas transitórias fazem o cliente reenviar a **mesma** intenção de operação.
+
+**Diferença:**
+
+| Conceito | Entrada | Saída |
+|---|---|---|
+| Concorrência | 3 operações distintas | versões 4, 5 e 6 |
+| Idempotência | 3 retries da mesma operação | apenas a versão 4 |
+
+**Estratégia:** header obrigatório `Idempotency-Key` (UUID) + colunas `idempotency_key` / `request_hash` em `document_version` + `UNIQUE (requirement_id, idempotency_key)`.
+
+**Por que `requestHash`:** a mesma chave com payload diferente é erro do cliente → **409**. Só a chave não basta (evitaria detectar reuso indevido).
+
+**Por que não só hash:** hashes iguais de payloads distintos são colisões teóricas; a chave é o identificador da operação lógica escolhido pelo cliente. Hash valida **compatibilidade** do retry.
+
+**Por que não Redis / cache / fila / mutex:** o desafio exige persistência no PostgreSQL junto do agregado; funciona entre múltiplas instâncias sem store extra; o `FOR UPDATE` no requisito já serializa a checagem/criação.
+
+**Reutilização da resposta:**
+
+```text
+Client
+  └─ POST /document-requirements/:id/versions
+       Header: Idempotency-Key
+       Body: { documentReference }
+            │
+            ▼
+       BEGIN + FOR UPDATE no requisito
+            │
+            ▼
+       Existe (requirementId, key)?
+         ├─ Sim ─ mesmo hash? ─ Sim → 200 (versão existente)
+         │                    └─ Não → 409 Conflict
+         └─ Não → cria versão + persiste key/hash → 201
+```
+
+**Importante:** o lock pessimista continua ativo. Idempotência não substitui concorrência — complementa.
 
 ---
 

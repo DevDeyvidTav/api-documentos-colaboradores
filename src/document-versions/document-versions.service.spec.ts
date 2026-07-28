@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { ConflictException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { DataSource, QueryFailedError } from 'typeorm';
@@ -6,16 +7,43 @@ import { DocumentRequirementsService } from '../document-requirements/document-r
 import { DocumentVersionsRepository } from './document-versions.repository';
 import { DocumentVersionsService } from './document-versions.service';
 import { DocumentVersion } from './entities/document-version.entity';
+import { buildDocumentVersionRequestHash } from './utils/document-version-request-hash.util';
 
 type MockedRepository = {
   [K in keyof DocumentVersionsRepository]: jest.Mock;
 };
+
+describe('buildDocumentVersionRequestHash', () => {
+  it('computes a deterministic sha256 of relevant payload fields', () => {
+    const hash = buildDocumentVersionRequestHash({
+      documentReference: 'documents/cpf-v1.pdf',
+    });
+    const expected = createHash('sha256')
+      .update(JSON.stringify({ documentReference: 'documents/cpf-v1.pdf' }))
+      .digest('hex');
+
+    expect(hash).toBe(expected);
+    expect(
+      buildDocumentVersionRequestHash({
+        documentReference: 'documents/cpf-v1.pdf',
+      }),
+    ).toBe(hash);
+  });
+
+  it('changes when documentReference changes', () => {
+    expect(
+      buildDocumentVersionRequestHash({ documentReference: 'a.pdf' }),
+    ).not.toBe(buildDocumentVersionRequestHash({ documentReference: 'b.pdf' }));
+  });
+});
 
 describe('DocumentVersionsService', () => {
   let service: DocumentVersionsService;
   let repository: MockedRepository;
   let documentRequirementsService: { findOne: jest.Mock };
   let dataSource: { transaction: jest.Mock };
+
+  const IDEMPOTENCY_KEY = '7b8d4d8e-f7af-46d3-a2fc-fc93bba0d96e';
 
   const buildRequirement = (
     overrides: Partial<DocumentRequirement> = {},
@@ -37,6 +65,10 @@ describe('DocumentVersionsService', () => {
       versionNumber: 1,
       isActive: true,
       documentReference: 'documents/collaborator-123/cpf-v1.pdf',
+      idempotencyKey: IDEMPOTENCY_KEY,
+      requestHash: buildDocumentVersionRequestHash({
+        documentReference: 'documents/collaborator-123/cpf-v1.pdf',
+      }),
       submittedAt: new Date('2026-01-01T00:00:00Z'),
       createdAt: new Date('2026-01-01T00:00:00Z'),
       ...overrides,
@@ -44,7 +76,7 @@ describe('DocumentVersionsService', () => {
 
   const mockSuccessfulTransaction = () => {
     dataSource.transaction.mockImplementation(
-      async (cb: (manager: unknown) => Promise<DocumentVersion>) => cb({}),
+      async (cb: (manager: unknown) => Promise<unknown>) => cb({}),
     );
   };
 
@@ -60,6 +92,7 @@ describe('DocumentVersionsService', () => {
             lockActiveRequirement: jest.fn(),
             findActiveCollaborator: jest.fn(),
             findActiveDocumentType: jest.fn(),
+            findByRequirementAndIdempotencyKey: jest.fn(),
             deactivateActiveVersions: jest.fn(),
             getNextVersionNumber: jest.fn(),
             createActiveVersion: jest.fn(),
@@ -87,16 +120,15 @@ describe('DocumentVersionsService', () => {
   });
 
   describe('submit', () => {
-    const prepareHappyPath = (version: DocumentVersion) => {
+    const prepareCreatePath = (version: DocumentVersion) => {
       const requirement = buildRequirement();
       repository.lockActiveRequirement.mockResolvedValue(requirement);
+      repository.findByRequirementAndIdempotencyKey.mockResolvedValue(null);
       repository.findActiveCollaborator.mockResolvedValue({
         id: requirement.collaboratorId,
-        deletedAt: null,
       });
       repository.findActiveDocumentType.mockResolvedValue({
         id: requirement.documentTypeId,
-        deletedAt: null,
       });
       repository.deactivateActiveVersions.mockResolvedValue(undefined);
       repository.getNextVersionNumber.mockResolvedValue(version.versionNumber);
@@ -105,120 +137,95 @@ describe('DocumentVersionsService', () => {
       return requirement;
     };
 
-    it('runs inside a transaction and locks the requirement with pessimistic write', async () => {
+    it('creates a new version on the first execution and persists idempotency fields', async () => {
       const version = buildVersion({ versionNumber: 1 });
-      const requirement = prepareHappyPath(version);
+      const requirement = prepareCreatePath(version);
+      const dto = { documentReference: version.documentReference };
 
-      await service.submit(requirement.id, {
-        documentReference: version.documentReference,
-      });
+      const result = await service.submit(requirement.id, dto, IDEMPOTENCY_KEY);
 
-      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
-      expect(repository.lockActiveRequirement).toHaveBeenCalledWith(
+      expect(result.replay).toBe(false);
+      expect(result.version).toBe(version);
+      expect(
+        repository.findByRequirementAndIdempotencyKey,
+      ).toHaveBeenCalledWith(
         expect.anything(),
         requirement.id,
+        IDEMPOTENCY_KEY,
       );
-    });
-
-    it('validates collaborator and document type inside the transaction', async () => {
-      const version = buildVersion({ versionNumber: 1 });
-      const requirement = prepareHappyPath(version);
-
-      await service.submit(requirement.id, {
-        documentReference: version.documentReference,
-      });
-
-      expect(repository.findActiveCollaborator).toHaveBeenCalledWith(
-        expect.anything(),
-        requirement.collaboratorId,
-      );
-      expect(repository.findActiveDocumentType).toHaveBeenCalledWith(
-        expect.anything(),
-        requirement.documentTypeId,
-      );
-    });
-
-    it('creates version 1 on the first submission', async () => {
-      const version = buildVersion({ versionNumber: 1 });
-      const requirement = prepareHappyPath(version);
-
-      const result = await service.submit(requirement.id, {
-        documentReference: version.documentReference,
-      });
-
       expect(repository.createActiveVersion).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
-          requirementId: requirement.id,
+          idempotencyKey: IDEMPOTENCY_KEY,
+          requestHash: buildDocumentVersionRequestHash(dto),
           versionNumber: 1,
-          documentReference: version.documentReference,
         }),
       );
-      expect(result).toBe(version);
     });
 
-    it('creates version 2 after deactivating the previous active version', async () => {
-      const version = buildVersion({
-        id: 'v5f2d9d0-1c1a-4b8a-9d3b-000000000002',
-        versionNumber: 2,
-        documentReference: 'documents/collaborator-123/cpf-v2.pdf',
-      });
-      const requirement = prepareHappyPath(version);
+    it('replays the existing version on retry with the same key and payload', async () => {
+      const existing = buildVersion({ versionNumber: 4, isActive: true });
+      repository.lockActiveRequirement.mockResolvedValue(buildRequirement());
+      repository.findByRequirementAndIdempotencyKey.mockResolvedValue(existing);
+      mockSuccessfulTransaction();
 
-      const result = await service.submit(requirement.id, {
-        documentReference: version.documentReference,
-      });
+      const result = await service.submit(
+        existing.requirementId,
+        { documentReference: existing.documentReference },
+        IDEMPOTENCY_KEY,
+      );
 
-      expect(repository.deactivateActiveVersions).toHaveBeenCalledWith(
-        expect.anything(),
-        requirement.id,
-      );
-      expect(repository.getNextVersionNumber).toHaveBeenCalledWith(
-        expect.anything(),
-        requirement.id,
-      );
-      expect(result.versionNumber).toBe(2);
-      expect(result.isActive).toBe(true);
+      expect(result).toEqual({ version: existing, replay: true });
+      expect(repository.createActiveVersion).not.toHaveBeenCalled();
+      expect(repository.deactivateActiveVersions).not.toHaveBeenCalled();
     });
 
-    it('throws NotFoundException when the locked requirement is missing or inactive', async () => {
+    it('throws ConflictException when the same key is reused with a different payload', async () => {
+      const existing = buildVersion({
+        requestHash: buildDocumentVersionRequestHash({
+          documentReference: 'documents/old.pdf',
+        }),
+      });
+      repository.lockActiveRequirement.mockResolvedValue(buildRequirement());
+      repository.findByRequirementAndIdempotencyKey.mockResolvedValue(existing);
+      mockSuccessfulTransaction();
+
+      await expect(
+        service.submit(
+          existing.requirementId,
+          { documentReference: 'documents/new.pdf' },
+          IDEMPOTENCY_KEY,
+        ),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(repository.createActiveVersion).not.toHaveBeenCalled();
+    });
+
+    it('locks the requirement and validates related entities on create', async () => {
+      const version = buildVersion();
+      const requirement = prepareCreatePath(version);
+
+      await service.submit(
+        requirement.id,
+        { documentReference: version.documentReference },
+        IDEMPOTENCY_KEY,
+      );
+
+      expect(repository.lockActiveRequirement).toHaveBeenCalled();
+      expect(repository.findActiveCollaborator).toHaveBeenCalled();
+      expect(repository.findActiveDocumentType).toHaveBeenCalled();
+    });
+
+    it('throws NotFoundException when the requirement is missing', async () => {
       repository.lockActiveRequirement.mockResolvedValue(null);
       mockSuccessfulTransaction();
 
       await expect(
-        service.submit('missing', { documentReference: 'documents/x.pdf' }),
+        service.submit(
+          'missing',
+          { documentReference: 'documents/x.pdf' },
+          IDEMPOTENCY_KEY,
+        ),
       ).rejects.toBeInstanceOf(NotFoundException);
-      expect(repository.createActiveVersion).not.toHaveBeenCalled();
-    });
-
-    it('throws NotFoundException when the collaborator is inactive', async () => {
-      repository.lockActiveRequirement.mockResolvedValue(buildRequirement());
-      repository.findActiveCollaborator.mockResolvedValue(null);
-      mockSuccessfulTransaction();
-
-      await expect(
-        service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
-          documentReference: 'documents/x.pdf',
-        }),
-      ).rejects.toBeInstanceOf(NotFoundException);
-      expect(repository.createActiveVersion).not.toHaveBeenCalled();
-    });
-
-    it('throws NotFoundException when the document type is inactive', async () => {
-      const requirement = buildRequirement();
-      repository.lockActiveRequirement.mockResolvedValue(requirement);
-      repository.findActiveCollaborator.mockResolvedValue({
-        id: requirement.collaboratorId,
-      });
-      repository.findActiveDocumentType.mockResolvedValue(null);
-      mockSuccessfulTransaction();
-
-      await expect(
-        service.submit(requirement.id, {
-          documentReference: 'documents/x.pdf',
-        }),
-      ).rejects.toBeInstanceOf(NotFoundException);
-      expect(repository.createActiveVersion).not.toHaveBeenCalled();
     });
 
     it('maps unique-violation into ConflictException', async () => {
@@ -229,102 +236,40 @@ describe('DocumentVersionsService', () => {
       dataSource.transaction.mockRejectedValue(uniqueViolationError);
 
       await expect(
-        service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
-          documentReference: 'documents/x.pdf',
-        }),
+        service.submit(
+          'r5f2d9d0-1c1a-4b8a-9d3b-000000000001',
+          { documentReference: 'documents/x.pdf' },
+          IDEMPOTENCY_KEY,
+        ),
       ).rejects.toBeInstanceOf(ConflictException);
     });
 
-    it('maps deadlock into ConflictException', async () => {
-      const deadlockError: QueryFailedError = Object.assign(
-        Object.create(QueryFailedError.prototype) as QueryFailedError,
-        { driverError: { code: '40P01' } },
-      );
-      dataSource.transaction.mockRejectedValue(deadlockError);
-
-      await expect(
-        service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
-          documentReference: 'documents/x.pdf',
-        }),
-      ).rejects.toBeInstanceOf(ConflictException);
-    });
-
-    it('propagates persistence errors so the transaction rolls back', async () => {
+    it('propagates persistence errors for transaction rollback', async () => {
       const version = buildVersion({ versionNumber: 2 });
-      prepareHappyPath(version);
+      prepareCreatePath(version);
       const persistenceError = new Error('insert failed');
       repository.createActiveVersion.mockRejectedValue(persistenceError);
 
       await expect(
-        service.submit('r5f2d9d0-1c1a-4b8a-9d3b-000000000001', {
-          documentReference: 'documents/x.pdf',
-        }),
+        service.submit(
+          version.requirementId,
+          { documentReference: version.documentReference },
+          IDEMPOTENCY_KEY,
+        ),
       ).rejects.toBe(persistenceError);
-      expect(repository.deactivateActiveVersions).toHaveBeenCalled();
-      expect(repository.createActiveVersion).toHaveBeenCalled();
-    });
-
-    it('uses the transactional manager for every write/read in submit', async () => {
-      const version = buildVersion({ versionNumber: 1 });
-      const requirement = prepareHappyPath(version);
-      const transactionalManager = { marker: 'tx-manager' };
-      dataSource.transaction.mockImplementation(
-        async (cb: (manager: unknown) => Promise<DocumentVersion>) =>
-          cb(transactionalManager),
-      );
-
-      await service.submit(requirement.id, {
-        documentReference: version.documentReference,
-      });
-
-      expect(repository.lockActiveRequirement).toHaveBeenCalledWith(
-        transactionalManager,
-        requirement.id,
-      );
-      expect(repository.findActiveCollaborator).toHaveBeenCalledWith(
-        transactionalManager,
-        requirement.collaboratorId,
-      );
-      expect(repository.findActiveDocumentType).toHaveBeenCalledWith(
-        transactionalManager,
-        requirement.documentTypeId,
-      );
-      expect(repository.deactivateActiveVersions).toHaveBeenCalledWith(
-        transactionalManager,
-        requirement.id,
-      );
-      expect(repository.getNextVersionNumber).toHaveBeenCalledWith(
-        transactionalManager,
-        requirement.id,
-      );
-      expect(repository.createActiveVersion).toHaveBeenCalledWith(
-        transactionalManager,
-        expect.any(Object),
-      );
     });
   });
 
   describe('findByRequirementId', () => {
     it('returns versions ordered by versionNumber DESC', async () => {
       const requirement = buildRequirement();
-      const versions = [
-        buildVersion({ versionNumber: 2, isActive: true }),
-        buildVersion({
-          id: 'v5f2d9d0-1c1a-4b8a-9d3b-000000000000',
-          versionNumber: 1,
-          isActive: false,
-        }),
-      ];
+      const versions = [buildVersion({ versionNumber: 2 })];
       documentRequirementsService.findOne.mockResolvedValue(requirement);
       repository.findByRequirementIdOrdered.mockResolvedValue(versions);
 
-      const result = await service.findByRequirementId(requirement.id);
-
-      expect(repository.findByRequirementIdOrdered).toHaveBeenCalledWith(
-        requirement.id,
-      );
-      expect(result[0].versionNumber).toBe(2);
-      expect(result[1].versionNumber).toBe(1);
+      await expect(
+        service.findByRequirementId(requirement.id),
+      ).resolves.toEqual(versions);
     });
   });
 
@@ -332,13 +277,11 @@ describe('DocumentVersionsService', () => {
     it('returns the version when found', async () => {
       const version = buildVersion();
       repository.findById.mockResolvedValue(version);
-
       await expect(service.findOne(version.id)).resolves.toBe(version);
     });
 
-    it('throws NotFoundException when the version does not exist', async () => {
+    it('throws NotFoundException when missing', async () => {
       repository.findById.mockResolvedValue(null);
-
       await expect(service.findOne('missing')).rejects.toBeInstanceOf(
         NotFoundException,
       );

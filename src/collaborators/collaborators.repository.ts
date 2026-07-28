@@ -86,7 +86,6 @@ export class CollaboratorsRepository {
     return query.getManyAndCount();
   }
 
-
   async softDeleteActive(id: string): Promise<boolean> {
     const result = await this.repository
       .createQueryBuilder()

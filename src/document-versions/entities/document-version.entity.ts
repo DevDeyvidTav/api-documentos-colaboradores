@@ -19,6 +19,11 @@ import { DocumentRequirement } from '../../document-requirements/entities/docume
   unique: true,
   where: 'is_active = true',
 })
+@Index(
+  'uq_document_version_requirement_idempotency_key',
+  ['requirementId', 'idempotencyKey'],
+  { unique: true },
+)
 @Index('idx_document_version_requirement_id', ['requirementId'])
 @Index('idx_document_version_submitted_at', ['submittedAt'])
 export class DocumentVersion {
@@ -40,6 +45,12 @@ export class DocumentVersion {
 
   @Column({ name: 'document_reference', type: 'varchar', length: 500 })
   documentReference: string;
+
+  @Column({ name: 'idempotency_key', type: 'varchar', length: 255 })
+  idempotencyKey: string;
+
+  @Column({ name: 'request_hash', type: 'varchar', length: 64 })
+  requestHash: string;
 
   @Column({ name: 'submitted_at', type: 'timestamptz' })
   submittedAt: Date;
